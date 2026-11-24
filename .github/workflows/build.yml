@@ -1,0 +1,74 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux GUI build deps
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/PrintForge | Out-Null
+          Copy-Item target/release/printforge.exe dist/PrintForge/PrintForge.exe
+          Copy-Item README.md dist/PrintForge/
+          Compress-Archive -Path dist/PrintForge -DestinationPath PrintForge-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrintForge-windows-x64
+          path: PrintForge-windows-x64.zip
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PrintForge-windows-x64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --target aarch64-apple-darwin
+      - run: cargo build --release --target x86_64-apple-darwin
+      - name: Universal app bundle
+        run: |
+          APP=dist/PrintForge.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/PrintForge" \
+            target/aarch64-apple-darwin/release/printforge \
+            target/x86_64-apple-darwin/release/printforge
+          cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+          codesign --force --deep -s - "$APP"
+          cd dist && ditto -c -k --keepParent PrintForge.app ../PrintForge-macos-universal.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrintForge-macos-universal
+          path: PrintForge-macos-universal.zip
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PrintForge-macos-universal.zip
