@@ -10,12 +10,13 @@ pub mod render;
 pub mod scene;
 pub mod shapes;
 pub mod thumbs;
+pub mod theme;
 
 use std::path::PathBuf;
 
 fn usage() {
     eprintln!(
-        "PrintForge {}\n\nUsage:\n  printforge [project.pforge | model.stl/.obj/.3mf]   open the editor\n  printforge check <file>                            print a printability report\n  printforge export <in> <out.3mf|.stl|.obj> [--generic]\n                                                     convert / export (3MF = Bambu H2C project unless --generic)\n  printforge demo <out.pforge>                        write a sample multi-colour project",
+        "RoboForge {}\n\nUsage:\n  roboforge [project.pforge | model.stl/.obj/.3mf]   open the editor\n  roboforge check <file>                            print a printability report\n  roboforge export <in> <out.3mf|.stl|.obj> [--generic]\n                                                     convert / export (3MF = Bambu H2C project unless --generic)\n  roboforge demo <out.pforge>                        write a sample multi-colour project",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -114,15 +115,15 @@ fn main() {
                     Err(e) => eprintln!("couldn't open {}: {e}", p.display()),
                 }
             }
-            if std::env::var("PRINTFORGE_DEMO").is_ok() {
+            if std::env::var("ROBOFORGE_DEMO").is_ok() {
                 doc = demo::demo_doc();
             }
-            let shot = std::env::var("PRINTFORGE_SCREENSHOT").ok().map(PathBuf::from);
+            let shot = std::env::var("ROBOFORGE_SCREENSHOT").ok().map(PathBuf::from);
             // Try with anti-aliasing first; some GPUs/VMs don't offer it.
             for msaa in [4u16, 0] {
                 let opts = eframe::NativeOptions {
                     viewport: eframe::egui::ViewportBuilder::default()
-                        .with_title(format!("PrintForge v{} — 3D design for Bambu Lab H2C", env!("CARGO_PKG_VERSION")))
+                        .with_title(format!("RoboForge v{} — 3D design for Bambu Lab H2C", env!("CARGO_PKG_VERSION")))
                         .with_inner_size([1400.0, 860.0])
                         .with_min_inner_size([900.0, 600.0]),
                     depth_buffer: 24,
@@ -130,7 +131,7 @@ fn main() {
                     ..Default::default()
                 };
                 let (d, f, s) = (doc.clone(), file.clone(), shot.clone());
-                match eframe::run_native("PrintForge", opts, Box::new(move |cc| Ok(Box::new(app::App::new(cc, d, f, s))))) {
+                match eframe::run_native("RoboForge", opts, Box::new(move |cc| Ok(Box::new(app::App::new(cc, d, f, s))))) {
                     Ok(()) => break,
                     Err(e) if msaa > 0 => eprintln!("retrying without anti-aliasing ({e})"),
                     Err(e) => eprintln!("failed to start: {e}"),

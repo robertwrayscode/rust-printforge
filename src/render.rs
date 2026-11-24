@@ -52,6 +52,7 @@ pub struct Renderer {
     pending: Option<Vec<Batch>>,
     pub view_proj: Mat4,
     pub eye: Vec3,
+    pub clear: [f32; 3],
 }
 
 pub type SharedRenderer = Arc<Mutex<Renderer>>;
@@ -167,7 +168,7 @@ impl Renderer {
             self.init(gl);
             self.upload(gl);
             let prog = self.program.unwrap();
-            gl.clear_color(0.93, 0.94, 0.96, 1.0);
+            gl.clear_color(self.clear[0], self.clear[1], self.clear[2], 1.0);
             gl.clear_depth_f32(1.0);
             gl.clear(glow::COLOR_BUFFER_BIT | glow::DEPTH_BUFFER_BIT);
             gl.use_program(Some(prog));

@@ -1,4 +1,4 @@
-# PrintForge
+# RoboForge
 
 A Tinkercad-style 3D designer written in Rust, built for multi-colour printing on the
 **Bambu Lab H2C**. It runs on Windows and macOS (and Linux). Design with simple shapes and
@@ -16,8 +16,8 @@ Artifacts). Tagging a version (for example `v0.1.0`) also attaches them to a Rel
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows 10/11 (x64) | `PrintForge-<version>-windows-x64.zip` | Unzip and run `PrintForge.exe`. SmartScreen may warn because the app isn't signed: click **More info → Run anyway**. |
-| macOS 11+ (Apple Silicon and Intel) | `PrintForge-<version>-macos-universal.zip` | Unzip and drag `PrintForge.app` to Applications. It's ad-hoc signed, so the first time you open it, **right-click → Open**. If macOS still refuses, run `xattr -dr com.apple.quarantine /Applications/PrintForge.app` once in Terminal. |
+| Windows 10/11 (x64) | `RoboForge-<version>-windows-x64.zip` | Unzip and run `RoboForge.exe`. SmartScreen may warn because the app isn't signed: click **More info → Run anyway**. |
+| macOS 11+ (Apple Silicon and Intel) | `RoboForge-<version>-macos-universal.zip` | Unzip and drag `RoboForge.app` to Applications. It's ad-hoc signed, so the first time you open it, **right-click → Open**. If macOS still refuses, run `xattr -dr com.apple.quarantine /Applications/RoboForge.app` once in Terminal. |
 
 To build it yourself, install Rust (1.96 or newer) from <https://rustup.rs> and run:
 
@@ -105,10 +105,10 @@ Ctrl on Windows = Cmd on Mac.
 ## Command line
 
 ```
-printforge check model.3mf            # printability report; exit code 1 if errors
-printforge export design.pforge out.3mf   # Bambu H2C project (add --generic for standard 3MF)
-printforge export design.pforge out.stl
-printforge demo sample.pforge         # sample multi-colour project
+roboforge check model.3mf            # printability report; exit code 1 if errors
+roboforge export design.pforge out.3mf   # Bambu H2C project (add --generic for standard 3MF)
+roboforge export design.pforge out.stl
+roboforge demo sample.pforge         # sample multi-colour project
 ```
 
 ## Not included (compared to Tinkercad)

@@ -34,18 +34,18 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/PrintForge | Out-Null
-          Copy-Item target/release/printforge.exe dist/PrintForge/PrintForge.exe
-          Copy-Item README.md dist/PrintForge/
-          Compress-Archive -Path dist/PrintForge -DestinationPath "PrintForge-$env:VERSION-windows-x64.zip"
+          New-Item -ItemType Directory -Force dist/RoboForge | Out-Null
+          Copy-Item target/release/roboforge.exe dist/RoboForge/RoboForge.exe
+          Copy-Item README.md dist/RoboForge/
+          Compress-Archive -Path dist/RoboForge -DestinationPath "RoboForge-$env:VERSION-windows-x64.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: PrintForge-${{ env.VERSION }}-windows-x64
-          path: PrintForge-${{ env.VERSION }}-windows-x64.zip
+          name: RoboForge-${{ env.VERSION }}-windows-x64
+          path: RoboForge-${{ env.VERSION }}-windows-x64.zip
       - if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: PrintForge-${{ env.VERSION }}-windows-x64.zip
+          files: RoboForge-${{ env.VERSION }}-windows-x64.zip
 
   macos:
     runs-on: macos-latest
@@ -62,19 +62,19 @@ jobs:
         run: echo "VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_ENV"
       - name: Universal app bundle
         run: |
-          APP=dist/PrintForge.app
+          APP=dist/RoboForge.app
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          lipo -create -output "$APP/Contents/MacOS/PrintForge" \
-            target/aarch64-apple-darwin/release/printforge \
-            target/x86_64-apple-darwin/release/printforge
+          lipo -create -output "$APP/Contents/MacOS/RoboForge" \
+            target/aarch64-apple-darwin/release/roboforge \
+            target/x86_64-apple-darwin/release/roboforge
           sed "s/0\.1\.0/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
           codesign --force --deep -s - "$APP"
-          cd dist && ditto -c -k --keepParent PrintForge.app "../PrintForge-$VERSION-macos-universal.zip"
+          cd dist && ditto -c -k --keepParent RoboForge.app "../RoboForge-$VERSION-macos-universal.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: PrintForge-${{ env.VERSION }}-macos-universal
-          path: PrintForge-${{ env.VERSION }}-macos-universal.zip
+          name: RoboForge-${{ env.VERSION }}-macos-universal
+          path: RoboForge-${{ env.VERSION }}-macos-universal.zip
       - if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: PrintForge-${{ env.VERSION }}-macos-universal.zip
+          files: RoboForge-${{ env.VERSION }}-macos-universal.zip

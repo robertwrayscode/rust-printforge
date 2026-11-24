@@ -1874,28 +1874,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "printforge"
-version = "0.1.8"
-dependencies = [
- "boolmesh",
- "earcutr",
- "eframe",
- "egui",
- "epaint_default_fonts",
- "glam",
- "mint",
- "png",
- "quick-xml 0.42.0",
- "rayon",
- "rfd",
- "serde",
- "serde_json",
- "transform-gizmo-egui",
- "ttf-parser",
- "zip",
-]
-
-[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2060,6 +2038,28 @@ dependencies = [
  "wayland-protocols",
  "web-sys",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "roboforge"
+version = "0.1.9"
+dependencies = [
+ "boolmesh",
+ "earcutr",
+ "eframe",
+ "egui",
+ "epaint_default_fonts",
+ "glam",
+ "mint",
+ "png",
+ "quick-xml 0.42.0",
+ "rayon",
+ "rfd",
+ "serde",
+ "serde_json",
+ "transform-gizmo-egui",
+ "ttf-parser",
+ "zip",
 ]
 
 [[package]]

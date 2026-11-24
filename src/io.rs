@@ -1,5 +1,5 @@
 //! File formats: Bambu Studio project 3MF (colour-ready for the H2C), generic colour 3MF,
-//! STL, OBJ (+MTL), and PrintForge project files.
+//! STL, OBJ (+MTL), and RoboForge project files.
 
 use crate::mesh::{Mesh, NO_COLOR};
 use crate::scene::{Document, Filament, MeshCache};
@@ -328,7 +328,7 @@ pub fn write_bambu_3mf(path: &Path, doc: &Document, objs: &[ExportObject]) -> Re
     settings.push_str("</config>\n");
     let date = "2026-01-01";
     let main = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" xmlns:BambuStudio=\"http://schemas.bambulab.com/package/2021\" xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\" requiredextensions=\"p\">\n <metadata name=\"Application\">BambuStudio-{version}</metadata>\n <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <metadata name=\"CreationDate\">{date}</metadata>\n <metadata name=\"Designer\">PrintForge</metadata>\n <metadata name=\"Title\"></metadata>\n <resources>\n{main_objs} </resources>\n <build p:UUID=\"2c7c17d8-22b5-4d84-8835-1976022ea369\">\n{build} </build>\n</model>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" xmlns:BambuStudio=\"http://schemas.bambulab.com/package/2021\" xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\" requiredextensions=\"p\">\n <metadata name=\"Application\">BambuStudio-{version}</metadata>\n <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <metadata name=\"CreationDate\">{date}</metadata>\n <metadata name=\"Designer\">RoboForge</metadata>\n <metadata name=\"Title\"></metadata>\n <resources>\n{main_objs} </resources>\n <build p:UUID=\"2c7c17d8-22b5-4d84-8835-1976022ea369\">\n{build} </build>\n</model>\n"
     );
     w(&mut z, "3D/3dmodel.model", main.as_bytes())?;
     w(&mut z, "3D/_rels/3dmodel.model.rels", rels.as_bytes())?;
@@ -357,7 +357,7 @@ pub fn write_generic_3mf(path: &Path, doc: &Document, objs: &[ExportObject]) -> 
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>"#).map_err(err)?;
-    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n <metadata name=\"Application\">PrintForge</metadata>\n <resources>\n  <basematerials id=\"1\">\n");
+    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n <metadata name=\"Application\">RoboForge</metadata>\n <resources>\n  <basematerials id=\"1\">\n");
     let order: Vec<u8> = fmap.keys().copied().collect();
     for &slot in &order {
         let fl = &doc.filaments[(slot as usize).min(doc.filaments.len() - 1)];
@@ -396,7 +396,7 @@ pub fn write_stl(path: &Path, objs: &[ExportObject]) -> Res<()> {
     let total: usize = objs.iter().map(|o| o.mesh.tris.len()).sum();
     let mut buf = Vec::with_capacity(84 + total * 50);
     let mut hdr = [0u8; 80];
-    let h = b"PrintForge binary STL";
+    let h = b"RoboForge binary STL";
     hdr[..h.len()].copy_from_slice(h);
     buf.extend_from_slice(&hdr);
     buf.extend_from_slice(&(total as u32).to_le_bytes());
@@ -428,7 +428,7 @@ pub fn write_obj(path: &Path, doc: &Document, objs: &[ExportObject]) -> Res<()> 
             f.color[2] as f64 / 255.0
         );
     }
-    let mut s = format!("# PrintForge\nmtllib {mtl_name}\n");
+    let mut s = format!("# RoboForge\nmtllib {mtl_name}\n");
     let mut base = 1;
     for o in objs {
         let _ = writeln!(s, "o {}", o.name.replace(' ', "_"));

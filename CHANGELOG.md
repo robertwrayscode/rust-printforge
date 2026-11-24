@@ -1,6 +1,15 @@
-# Changelog
+# Changelog (RoboForge, formerly PrintForge)
 
 The version shows in the window title and the status bar, and in the download file names.
+
+## 0.1.9 — 2026-11-24
+- **New name: RoboForge** (was PrintForge). Downloads are now `RoboForge-<version>-…`.
+  Existing `.pforge` project files still open.
+- **Dark professional theme** by default, with section headers, a blue accent colour, and a
+  darker 3D workspace so filament colours stand out. Switch back under View ▸ Dark theme
+  (your choice is remembered).
+- The Inspector no longer jumps around when you switch a part between Solid and Hole.
+- Colour swatches have an outline so dark filaments (e.g. black) are visible.
 
 ## 0.1.8 — 2026-11-24
 - **Side handles (Tinkercad-style):** a selected part shows small white squares on its sides

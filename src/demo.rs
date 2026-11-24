@@ -67,7 +67,7 @@ pub fn demo_doc() -> Document {
     let mut text = Object::new(
         text_id,
         "Text",
-        Kind::Shape(Shape::Text { text: "PrintForge".into(), font: FontChoice::Sans, spacing: 0.0 }),
+        Kind::Shape(Shape::Text { text: "RoboForge".into(), font: FontChoice::Sans, spacing: 0.0 }),
         DVec3::new(70.0, 14.0, 2.0),
     );
     text.pos = DVec3::new(0.0, 0.0, 4.0);

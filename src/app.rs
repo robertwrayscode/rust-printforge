@@ -1,4 +1,4 @@
-//! The PrintForge desktop application.
+//! The RoboForge desktop application.
 
 use crate::check::{self, CheckInput, Report, Severity};
 use crate::io;
@@ -238,8 +238,7 @@ fn c32(c: [u8; 3]) -> Color32 {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, doc: Document, file: Option<PathBuf>, screenshot: Option<PathBuf>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::light());
-        cc.egui_ctx.all_styles_mut(|style| style.spacing.item_spacing = Vec2::new(6.0, 5.0));
+        crate::theme::apply(&cc.egui_ctx, crate::theme::load_saved());
         let committed = doc.clone();
         App {
             doc,
@@ -287,7 +286,7 @@ impl App {
             confirm_discard: None,
             allow_close: false,
             last_title: String::new(),
-            status: "Welcome to PrintForge — pick a shape on the left to start.".into(),
+            status: "Welcome to RoboForge — pick a shape on the left to start.".into(),
             uniform_scale: false,
             show_array: false,
             array_count: 4,
@@ -692,7 +691,7 @@ impl App {
     }
 
     fn open(&mut self) {
-        let Some(p) = rfd::FileDialog::new().add_filter("PrintForge project", &["pforge"]).pick_file() else { return };
+        let Some(p) = rfd::FileDialog::new().add_filter("RoboForge project", &["pforge"]).pick_file() else { return };
         match io::load_project(&p) {
             Ok(d) => {
                 self.new_doc();
@@ -710,7 +709,7 @@ impl App {
     /// Returns true if the project was saved.
     fn save(&mut self, as_new: bool) -> bool {
         let path = if as_new || self.file.is_none() {
-            rfd::FileDialog::new().add_filter("PrintForge project", &["pforge"]).set_file_name("design.pforge").save_file()
+            rfd::FileDialog::new().add_filter("RoboForge project", &["pforge"]).set_file_name("design.pforge").save_file()
         } else {
             self.file.clone()
         };
@@ -917,7 +916,7 @@ impl App {
                 let [a, b, c] = e.mesh.tri_points(t);
                 let (a, b, c) = (a.as_vec3(), b.as_vec3(), c.as_vec3());
                 if e.hole {
-                    holes.tri(a, b, c, [0.55, 0.58, 0.62, if sel { 0.45 } else { 0.3 }]);
+                    holes.tri(a, b, c, crate::theme::hole_color(sel));
                 } else {
                     let ci = e.mesh.colors[t];
                     let col = fil.get(ci as usize).map(|f| f.color).unwrap_or([200, 200, 200]);
@@ -965,18 +964,19 @@ impl App {
         let p = &self.doc.printer;
         let (hx, hy) = (330.0f32 / 2.0, 320.0f32 / 2.0);
         let z = -0.05;
-        let bc = [0.82, 0.84, 0.87, 1.0];
+        let bc = crate::theme::bed_color();
         solid.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, -hy, z), Vec3::new(hx, hy, z), bc);
         solid.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, hy, z), Vec3::new(-hx, hy, z), bc);
-        let gc = [0.62, 0.66, 0.72, 0.7];
+        let gc = crate::theme::grid_color();
+        let ga = crate::theme::grid_axis_color();
         let mut x = -150.0f32;
         while x <= 150.0 {
-            lines.line(Vec3::new(x, -hy, 0.0), Vec3::new(x, hy, 0.0), if x == 0.0 { [0.45, 0.5, 0.6, 1.0] } else { gc });
+            lines.line(Vec3::new(x, -hy, 0.0), Vec3::new(x, hy, 0.0), if x == 0.0 { ga } else { gc });
             x += 10.0;
         }
         let mut y = -160.0f32;
         while y <= 160.0 {
-            lines.line(Vec3::new(-hx, y, 0.0), Vec3::new(hx, y, 0.0), if y == 0.0 { [0.45, 0.5, 0.6, 1.0] } else { gc });
+            lines.line(Vec3::new(-hx, y, 0.0), Vec3::new(hx, y, 0.0), if y == 0.0 { ga } else { gc });
             y += 10.0;
         }
         let (mx, my) = (p.bed_multi[0] as f32 / 2.0, p.bed_multi[1] as f32 / 2.0);
@@ -1098,6 +1098,8 @@ impl App {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
+            ui.label(RichText::new("RoboForge").strong().size(15.0).color(crate::theme::accent()));
+            ui.add_space(6.0);
             ui.menu_button("File", |ui| {
                 if ui.button("New").clicked() {
                     self.guarded(PendingAction::New, &ui.ctx().clone());
@@ -1196,6 +1198,13 @@ impl App {
                     ui.close();
                 }
                 ui.checkbox(&mut self.camera.ortho, "Orthographic");
+                ui.separator();
+                let mut d = crate::theme::dark();
+                if ui.checkbox(&mut d, "Dark theme").changed() {
+                    crate::theme::apply(ui.ctx(), d);
+                    crate::theme::save(d);
+                    self.rebuild_batches();
+                }
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("Controls & shortcuts").clicked() {
@@ -1245,7 +1254,7 @@ impl App {
             if ui.add_enabled(!checking, egui::Button::new(RichText::new("✔ Check printability").strong())).clicked() {
                 self.start_check();
             }
-            if ui.button(RichText::new("⬆ Export to Bambu").strong().color(Color32::from_rgb(20, 120, 60))).clicked() {
+            if ui.button(RichText::new("⬆ Export to Bambu").strong().color(crate::theme::export_green())).clicked() {
                 self.request_export(ExportKind::Bambu);
             }
         });
@@ -1253,7 +1262,7 @@ impl App {
 
     fn left_panel(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Shapes");
+            crate::theme::section(ui, "Shapes");
             ui.label(RichText::new("Click to add, or drag onto the plate or another object. Make any shape a Hole to cut with it.").small().weak());
             if self.thumbs.is_empty() {
                 for i in 0..LIBRARY.len() {
@@ -1267,14 +1276,14 @@ impl App {
                 for (i, info) in LIBRARY.iter().enumerate() {
                     // one widget that both clicks (add) and drags (drop onto the plate/a part)
                     let (rect, r) = ui.allocate_exact_size(tile, Sense::click_and_drag());
-                    let bg = if r.hovered() || r.dragged() { Color32::from_rgb(222, 232, 248) } else { Color32::from_gray(238) };
+                    let bg = if r.hovered() || r.dragged() { crate::theme::tile_hover() } else { crate::theme::tile_bg() };
                     ui.painter().rect_filled(rect, 6.0, bg);
                     if r.hovered() {
-                        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, Color32::from_rgb(90, 140, 220)), egui::StrokeKind::Inside);
+                        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, crate::theme::accent()), egui::StrokeKind::Inside);
                     }
                     let img_rect = Rect::from_center_size(rect.center() - Vec2::new(0.0, 8.0), Vec2::splat(50.0));
                     ui.painter().image(self.thumbs[i].id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-                    ui.painter().text(Pos2::new(rect.center().x, rect.bottom() - 9.0), egui::Align2::CENTER_CENTER, info.name, egui::FontId::proportional(11.5), Color32::from_gray(60));
+                    ui.painter().text(Pos2::new(rect.center().x, rect.bottom() - 9.0), egui::Align2::CENTER_CENTER, info.name, egui::FontId::proportional(11.5), crate::theme::tile_text());
                     let r = r.on_hover_text(format!("{} — click to add, or drag onto the plate or another part", info.name));
                     if r.clicked() {
                         self.add_shape(i);
@@ -1298,7 +1307,7 @@ impl App {
                 self.import();
             }
             ui.separator();
-            ui.heading("Filaments");
+            crate::theme::section(ui, "Filaments");
             ui.label(RichText::new("These become the filament list in Bambu Studio. Set them to match your AMS spools.").small().weak());
             let mut remove = false;
             let n = self.doc.filaments.len();
@@ -1342,7 +1351,7 @@ impl App {
                 self.touch();
             }
             ui.separator();
-            ui.heading("Objects");
+            crate::theme::section(ui, "Objects");
             let mut click: Option<(u64, bool)> = None;
             let mut toggles: Vec<(u64, u8)> = vec![];
             for o in &self.doc.objects {
@@ -1355,7 +1364,7 @@ impl App {
                     }
                     let col = if o.hole { Color32::GRAY } else { c32(self.doc.filaments.get(o.color as usize).map(|f| f.color).unwrap_or([128; 3])) };
                     let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-                    ui.painter().rect_filled(r, 2.0, col);
+                    ui.painter().rect_filled(r, 2.0, col); ui.painter().rect_stroke(r, 2.0, Stroke::new(1.0, Color32::from_gray(120)), egui::StrokeKind::Inside);
                     let label = format!("{}{}", o.name, if o.hole { " (hole)" } else if o.is_group() { " (group)" } else { "" });
                     let resp = ui.selectable_label(self.selection.contains(&o.id), label);
                     if resp.clicked() {
@@ -1396,7 +1405,7 @@ impl App {
             match self.tool {
                 Tool::Paint | Tool::Fill => self.paint_panel(ui),
                 Tool::Measure => {
-                    ui.heading("Measure");
+                    crate::theme::section(ui, "Measure");
                     ui.label("Click two points on your model.");
                     if self.measure.len() == 2 {
                         let d = self.measure[1] - self.measure[0];
@@ -1408,7 +1417,7 @@ impl App {
                     }
                 }
                 Tool::PushPull => {
-                    ui.heading("Push / Pull a face");
+                    crate::theme::section(ui, "Push / Pull a face");
                     ui.label("Click a flat face, then drag it outward to extrude or inward to cut. Or type an exact distance below.");
                     let mut apply = None;
                     if let Some(pp) = &mut self.pp {
@@ -1439,7 +1448,7 @@ impl App {
                     ui.label(RichText::new("The part becomes a mesh afterwards (size/position still editable).").small().weak());
                 }
                 Tool::SnapFaces => {
-                    ui.heading("Snap faces together");
+                    crate::theme::section(ui, "Snap faces together");
                     if self.snap_from.is_none() {
                         ui.label("1. Click the face of the part you want to MOVE.");
                     } else {
@@ -1451,7 +1460,7 @@ impl App {
                     ui.label(RichText::new("The first part is turned and moved so the two faces sit flush, touching at the points you clicked.").small().weak());
                 }
                 Tool::LayFlat => {
-                    ui.heading("Lay flat");
+                    crate::theme::section(ui, "Lay flat");
                     ui.label("Click a face of an object; it'll be rotated so that face sits on the plate. Great for reducing supports.");
                 }
                 Tool::Select => {}
@@ -1465,15 +1474,15 @@ impl App {
     }
 
     fn paint_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading(if self.tool == Tool::Paint { "Paint brush" } else { "Bucket fill" });
+        crate::theme::section(ui, if self.tool == Tool::Paint { "Paint brush" } else { "Bucket fill" });
         ui.label("Pick a filament, then click/drag on a model. The brush paints a round dab of the radius below.");
         ui.horizontal_wrapped(|ui| {
             for (i, f) in self.doc.filaments.iter().enumerate() {
                 let sel = self.paint_slot as usize == i && !self.erase;
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
-                ui.painter().rect_filled(r, 4.0, c32(f.color));
+                ui.painter().rect_filled(r, 4.0, c32(f.color)); ui.painter().rect_stroke(r, 4.0, Stroke::new(1.0, Color32::from_gray(120)), egui::StrokeKind::Inside);
                 if sel {
-                    ui.painter().rect_stroke(r.expand(2.0), 4.0, Stroke::new(2.5, Color32::from_rgb(20, 90, 220)), egui::StrokeKind::Outside);
+                    ui.painter().rect_stroke(r.expand(2.0), 4.0, Stroke::new(2.5, crate::theme::accent()), egui::StrokeKind::Outside);
                 }
                 if resp.on_hover_text(format!("{} — {}", i + 1, f.name)).clicked() {
                     self.paint_slot = i as u8;
@@ -1510,12 +1519,12 @@ impl App {
     fn inspector(&mut self, ui: &mut egui::Ui) {
         let sel = self.selection.clone();
         if sel.is_empty() {
-            ui.heading("Inspector");
+            crate::theme::section(ui, "Inspector");
             ui.label("Select an object to edit it.");
             return;
         }
         if sel.len() > 1 {
-            ui.heading(format!("{} objects selected", sel.len()));
+            crate::theme::section(ui, &format!("{} objects selected", sel.len()));
             ui.horizontal(|ui| {
                 if ui.button("Solid").clicked() {
                     self.set_hole(false);
@@ -1550,7 +1559,7 @@ impl App {
         let Some(mut o) = self.doc.find(id).cloned() else { return };
         let before = format!("{:?}", (&o.name, &o.kind_debug(), o.size, o.pos, o.rot, o.hole, o.color, &o.mirror));
         ui.horizontal(|ui| {
-            ui.heading("Inspector");
+            crate::theme::section(ui, "Inspector");
             if o.locked {
                 ui.label("(locked)");
             }
@@ -1566,20 +1575,23 @@ impl App {
                 keep_colors_changed = true;
             }
         }
-        // colour
-        if !o.hole {
-            ui.horizontal_wrapped(|ui| {
+        // colour (kept visible for holes, greyed out, so the layout doesn't jump)
+        {
+            let hole = o.hole;
+            ui.add_enabled_ui(!hole, |ui| {
+                ui.horizontal_wrapped(|ui| {
                 ui.label("Colour");
                 for (i, f) in self.doc.filaments.iter().enumerate() {
                     let (r, resp) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-                    ui.painter().rect_filled(r, 3.0, c32(f.color));
+                    ui.painter().rect_filled(r, 3.0, c32(f.color)); ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0, Color32::from_gray(120)), egui::StrokeKind::Inside);
                     if o.color as usize == i {
-                        ui.painter().rect_stroke(r.expand(1.5), 3.0, Stroke::new(2.0, Color32::from_rgb(20, 90, 220)), egui::StrokeKind::Outside);
+                        ui.painter().rect_stroke(r.expand(1.5), 3.0, Stroke::new(2.0, crate::theme::accent()), egui::StrokeKind::Outside);
                     }
                     if resp.on_hover_text(format!("{} — {}", i + 1, f.name)).clicked() {
                         o.color = i as u8;
                     }
                 }
+            });
             });
         }
         // shape parameters
@@ -1651,7 +1663,7 @@ impl App {
             let fl = self.doc.filaments.clone();
             for (i, f) in fl.iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-                ui.painter().rect_filled(r, 3.0, c32(f.color));
+                ui.painter().rect_filled(r, 3.0, c32(f.color)); ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0, Color32::from_gray(120)), egui::StrokeKind::Inside);
                 if resp.on_hover_text(&f.name).clicked() {
                     for id in sel {
                         if let Some(o) = self.doc.find_mut(*id) {
@@ -1704,7 +1716,7 @@ impl App {
     }
 
     fn check_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Print check");
+        crate::theme::section(ui, "Print check");
         ui.horizontal(|ui| {
             if ui.add_enabled(self.check_rx.is_none(), egui::Button::new("Run check")).clicked() {
                 self.start_check();
@@ -1725,22 +1737,22 @@ impl App {
             (
                 "✖  Not ready to print".to_string(),
                 format!("Fix the {errors} red problem{} below first — the print would likely fail or come out wrong.", if errors == 1 { "" } else { "s" }),
-                Color32::from_rgb(170, 20, 20),
-                Color32::from_rgb(253, 228, 228),
+                crate::theme::bad_banner().0,
+                crate::theme::bad_banner().1,
             )
         } else if warns > 0 {
             (
                 "✔  Ready to print".to_string(),
                 format!("It will print. {warns} orange note{} below {} worth a look but won't stop the print.", if warns == 1 { "" } else { "s" }, if warns == 1 { "is" } else { "are" }),
-                Color32::from_rgb(20, 110, 40),
-                Color32::from_rgb(226, 245, 230),
+                crate::theme::ok_banner().0,
+                crate::theme::ok_banner().1,
             )
         } else {
             (
                 "✔  Ready to print".to_string(),
                 "No problems found.".to_string(),
-                Color32::from_rgb(20, 110, 40),
-                Color32::from_rgb(226, 245, 230),
+                crate::theme::ok_banner().0,
+                crate::theme::ok_banner().1,
             )
         };
         egui::Frame::new().fill(bg).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
@@ -1757,9 +1769,9 @@ impl App {
         let mut clicked = None;
         for (i, is) in r.issues.iter().enumerate() {
             let (icon, col) = match is.severity {
-                Severity::Error => ("✖", Color32::from_rgb(200, 30, 30)),
-                Severity::Warning => ("⚠", Color32::from_rgb(200, 120, 0)),
-                Severity::Info => ("ℹ", Color32::from_rgb(40, 100, 180)),
+                Severity::Error => ("✖", crate::theme::error()),
+                Severity::Warning => ("⚠", crate::theme::warn()),
+                Severity::Info => ("ℹ", crate::theme::info()),
             };
             let sel = self.selected_issue == Some(i);
             let who = is.object.and_then(|id| self.doc.find(id)).map(|o| format!(" · {}", o.name)).unwrap_or_default();
@@ -2198,6 +2210,7 @@ impl App {
         {
             let mut r = self.renderer.lock().unwrap();
             r.view_proj = (self.camera.proj(aspect) * self.camera.view()).as_mat4();
+            r.clear = crate::theme::clear_color();
             r.eye = self.camera.eye().as_vec3();
         }
         // overlays: gizmo draws itself; dimension labels, brush, measure
@@ -2210,7 +2223,7 @@ impl App {
                     if let Some(q) = self.camera.project(rect, p) {
                         let g = painter.layout_no_wrap(t, egui::FontId::proportional(13.0), Color32::WHITE);
                         let r = Rect::from_center_size(q, g.size() + Vec2::new(8.0, 4.0));
-                        painter.rect_filled(r, 3.0, Color32::from_rgba_unmultiplied(20, 70, 160, 210));
+                        painter.rect_filled(r, 3.0, Color32::from_rgba_unmultiplied(40, 90, 190, 225));
                         painter.galley(r.min + Vec2::new(4.0, 2.0), g, Color32::WHITE);
                     }
                 };
@@ -2253,12 +2266,12 @@ impl App {
             for h in self.resize_handles(rect) {
                 let hot = hp.map(|p| p.distance(h.2) < 10.0).unwrap_or(false) || self.resize.as_ref().map(|r| r.axis == h.0 && r.sign == h.1).unwrap_or(false);
                 let r = Rect::from_center_size(h.2, Vec2::splat(if hot { 12.0 } else { 9.0 }));
-                painter.rect_filled(r, 2.0, if hot { Color32::from_rgb(40, 110, 230) } else { Color32::WHITE });
-                painter.rect_stroke(r, 2.0, Stroke::new(1.5, Color32::from_rgb(40, 110, 230)), egui::StrokeKind::Middle);
+                painter.rect_filled(r, 2.0, if hot { crate::theme::accent() } else { Color32::WHITE });
+                painter.rect_stroke(r, 2.0, Stroke::new(1.5, crate::theme::accent()), egui::StrokeKind::Middle);
             }
             if let Some(rd) = &self.resize {
                 if let (Some(o), Some(p)) = (self.doc.find(rd.id), ui.input(|i| i.pointer.hover_pos())) {
-                    painter.text(p + Vec2::new(14.0, -14.0), egui::Align2::LEFT_BOTTOM, format!("{} {:.2} mm", ["W", "D", "H"][rd.axis], o.size[rd.axis]), egui::FontId::proportional(15.0), Color32::from_rgb(20, 70, 160));
+                    painter.text(p + Vec2::new(14.0, -14.0), egui::Align2::LEFT_BOTTOM, format!("{} {:.2} mm", ["W", "D", "H"][rd.axis], o.size[rd.axis]), egui::FontId::proportional(15.0), crate::theme::accent());
                 }
             }
         }
@@ -2299,7 +2312,7 @@ impl App {
             });
         });
         if self.doc.objects.is_empty() {
-            painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click a shape on the left to begin", egui::FontId::proportional(20.0), Color32::from_gray(110));
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click a shape on the left to begin", egui::FontId::proportional(20.0), crate::theme::hint());
         }
     }
 
@@ -2925,7 +2938,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("PrintForge v{} · {} · {}", env!("CARGO_PKG_VERSION"), self.doc.printer.name, if self.unsaved() { "unsaved changes".to_string() } else { self.file.as_ref().map(|f| f.display().to_string()).unwrap_or("not saved yet".into()) })).weak());
+                    ui.label(RichText::new(format!("RoboForge v{} · {} · {}", env!("CARGO_PKG_VERSION"), self.doc.printer.name, if self.unsaved() { "unsaved changes".to_string() } else { self.file.as_ref().map(|f| f.display().to_string()).unwrap_or("not saved yet".into()) })).weak());
                 });
             });
         });
@@ -2935,7 +2948,7 @@ impl eframe::App for App {
         self.windows(&ctx);
         self.commit_if_idle(&ctx);
         let title = format!(
-            "{}{} — PrintForge v{}",
+            "{}{} — RoboForge v{}",
             if self.unsaved() { "● " } else { "" },
             self.file.as_ref().and_then(|f| f.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or("Untitled".into()),
             env!("CARGO_PKG_VERSION")
@@ -2969,16 +2982,26 @@ impl App {
         }
         if frame == 2 {
             self.fit_view(false);
+            if let Ok(v) = std::env::var("ROBOFORGE_SHOT_VIEW") {
+                let p: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                if p.len() >= 2 {
+                    self.camera.yaw = p[0];
+                    self.camera.pitch = p[1];
+                }
+                if p.len() >= 3 {
+                    self.camera.dist *= p[2];
+                }
+            }
         }
         if frame == 6 {
-            if std::env::var("PRINTFORGE_SHOT_SELECT").is_ok() {
+            if std::env::var("ROBOFORGE_SHOT_SELECT").is_ok() {
                 self.selection = self.doc.objects.first().map(|o| vec![o.id]).unwrap_or_default();
                 self.geometry_dirty = true;
             }
-            if let Ok(t) = std::env::var("PRINTFORGE_SHOT_TOOL") {
+            if let Ok(t) = std::env::var("ROBOFORGE_SHOT_TOOL") {
                 self.tool = match t.as_str() { "paint" => Tool::Paint, "fill" => Tool::Fill, _ => Tool::Select };
             }
-            if std::env::var("PRINTFORGE_SHOT_CHECK").is_ok() {
+            if std::env::var("ROBOFORGE_SHOT_CHECK").is_ok() {
                 let r = check::run(&self.build_check_input());
                 self.selected_issue = r.issues.iter().position(|i| !i.tris.is_empty());
                 if let Some(id) = self.selected_issue.and_then(|i| r.issues[i].object) {
