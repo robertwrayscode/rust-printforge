@@ -37,6 +37,7 @@ cargo run --release
   results stay watertight. Groups can be ungrouped, nested, scaled, and rotated.
 - **Multi-colour groups:** a group keeps each part's colour by default. Turn off
   *Keep each part's colour* to give the whole group one colour, as Tinkercad does.
+- **Snapping:** dragged parts ride up onto other parts and snap edge-to-edge or centre-to-centre with them (pink guide lines); **Snap faces** joins two parts face to face; drag shapes from the panel onto the plate or onto another part. Hold Shift to move freely.
 - **Transforms:** drag objects on the plate with grid snapping. The on-screen gizmo moves,
   rotates (in 15° steps), and scales. Exact size, position, and rotation are in the
   inspector, with *Keep proportions* and quick ±90° rotate buttons.

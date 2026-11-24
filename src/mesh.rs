@@ -635,3 +635,17 @@ mod repair_tests {
         assert!((r.volume() - 1000.0).abs() < 1e-6, "{}", r.volume());
     }
 }
+
+#[cfg(test)]
+mod bvh_tests {
+    use super::*;
+    #[test]
+    fn vertical_ray_hits_box_top() {
+        let m = crate::shapes::Shape::Box { radius: 0.0, steps: 1 }.generate(DVec3::splat(20.0));
+        let b = Bvh::build(&m);
+        let o = DVec3::new(3.0, 2.0, 1.0e5);
+        let hit = b.raycast(&m, o, DVec3::NEG_Z, None);
+        assert!(hit.is_some(), "no hit");
+        assert!((o.z - hit.unwrap().0 - 20.0).abs() < 1e-6, "{:?}", hit);
+    }
+}

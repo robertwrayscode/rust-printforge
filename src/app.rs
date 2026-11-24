@@ -80,6 +80,7 @@ pub enum Tool {
     Fill,
     Measure,
     LayFlat,
+    SnapFaces,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,7 +117,7 @@ enum Drag {
     None,
     Orbit,
     Pan,
-    Move { plane_z: f64, start_hit: DVec3, start: Vec<(u64, DVec3)> },
+    Move { plane_z: f64, start_hit: DVec3, start: Vec<(u64, DVec3)>, sb: Aabb, others: Vec<Aabb>, riding: bool, samples: Vec<(f64, f64, f64)> },
     Box { start: Pos2 },
     Paint,
 }
@@ -150,6 +151,8 @@ pub struct App {
     refine_mm: f64,
     // measure
     measure: Vec<DVec3>,
+    snap_from: Option<(u64, DVec3, DVec3)>,
+    guides: Vec<(DVec3, DVec3)>,
     // check
     report: Option<Report>,
     check_rx: Option<mpsc::Receiver<Report>>,
@@ -210,6 +213,8 @@ impl App {
             erase: false,
             refine_mm: 1.0,
             measure: vec![],
+            snap_from: None,
+            guides: vec![],
             report: None,
             check_rx: None,
             selected_issue: None,
@@ -1058,10 +1063,12 @@ impl App {
             ui.selectable_value(&mut tool, Tool::Paint, "Paint");
             ui.selectable_value(&mut tool, Tool::Fill, "Fill");
             ui.selectable_value(&mut tool, Tool::LayFlat, "Lay flat");
+            ui.selectable_value(&mut tool, Tool::SnapFaces, "Snap faces");
             ui.selectable_value(&mut tool, Tool::Measure, "Measure");
             if tool != self.tool {
                 self.tool = tool;
                 self.measure.clear();
+                self.snap_from = None;
             }
             ui.separator();
             if self.tool == Tool::Select {
@@ -1098,10 +1105,13 @@ impl App {
     fn left_panel(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Shapes");
-            ui.label(RichText::new("Click to add. Make any shape a Hole to cut with it.").small().weak());
+            ui.label(RichText::new("Click to add, or drag onto the plate or another object. Make any shape a Hole to cut with it.").small().weak());
             egui::Grid::new("shapes").num_columns(2).spacing([4.0, 4.0]).show(ui, |ui| {
                 for (i, info) in LIBRARY.iter().enumerate() {
-                    if ui.add_sized([108.0, 26.0], egui::Button::new(info.name)).clicked() {
+                    let r = ui.dnd_drag_source(egui::Id::new(("shape", i)), i, |ui| {
+                        ui.add_sized([108.0, 26.0], egui::Button::new(info.name).sense(Sense::click()))
+                    });
+                    if r.inner.clicked() {
                         self.add_shape(i);
                     }
                     if i % 2 == 1 {
@@ -1221,6 +1231,18 @@ impl App {
                     if ui.button("Clear").clicked() {
                         self.measure.clear();
                     }
+                }
+                Tool::SnapFaces => {
+                    ui.heading("Snap faces together");
+                    if self.snap_from.is_none() {
+                        ui.label("1. Click the face of the part you want to MOVE.");
+                    } else {
+                        ui.label(RichText::new("2. Now click the face it should attach to.").strong());
+                        if ui.button("Cancel").clicked() {
+                            self.snap_from = None;
+                        }
+                    }
+                    ui.label(RichText::new("The first part is turned and moved so the two faces sit flush, touching at the points you clicked.").small().weak());
                 }
                 Tool::LayFlat => {
                     ui.heading("Lay flat");
@@ -1676,8 +1698,7 @@ impl App {
                         if self.selected().iter().any(|o| o.locked) {
                             Drag::Orbit
                         } else {
-                            let start = self.selected().iter().map(|o| (o.id, o.pos)).collect();
-                            Drag::Move { plane_z: h.point.z, start_hit: h.point, start }
+                            self.begin_move(h.point)
                         }
                     }
                     (_, None) if mods.shift => Drag::Box { start: press },
@@ -1704,21 +1725,42 @@ impl App {
                 let up = v.transform_vector3(DVec3::Y);
                 self.camera.target += (-right * delta.x as f64 + up * delta.y as f64) * s;
             }
-            Drag::Move { plane_z, start_hit, start } => {
+            Drag::Move { plane_z, start_hit, start, sb, others, riding, samples } => {
+                let (plane_z, start_hit, start, sb, others, riding, samples) =
+                    (*plane_z, *start_hit, start.clone(), *sb, others.clone(), *riding, samples.clone());
                 if let Some(p) = pointer {
                     let (o, d) = self.camera.ray(rect, p);
-                    if d.z.abs() > 1e-6 {
-                        let t = (plane_z - o.z) / d.z;
-                        if t > 0.0 {
-                            let h = o + d * t;
-                            let mut dd = h - *start_hit;
+                    let ids_now: Vec<u64> = start.iter().map(|x| x.0).collect();
+                    // follow the surface under the cursor (Tinkercad-style); else the drag plane
+                    let surf = if mods.shift { None } else { self.pick_excluding(o, d, &ids_now) };
+                    if d.z.abs() > 1e-6 || surf.is_some() {
+                        let t = if d.z.abs() > 1e-6 { (plane_z - o.z) / d.z } else { -1.0 };
+                        if t > 0.0 || surf.is_some() {
+                            let h = surf.unwrap_or(o + d * t);
+                            let mut dd = h - start_hit;
+                            dd.z = 0.0;
                             if self.snap > 0.0 {
                                 dd.x = (dd.x / self.snap).round() * self.snap;
                                 dd.y = (dd.y / self.snap).round() * self.snap;
                             }
-                            for (id, sp) in start.clone() {
+                            self.guides.clear();
+                            let free = mods.shift;
+                            if !free {
+                                self.snap_to_neighbours(&sb, &others, &mut dd);
+                            }
+                            let ids: Vec<u64> = start.iter().map(|x| x.0).collect();
+                            if riding && !free {
+                                // sit on whatever is under the footprint (or the plate)
+                                let mut floor: f64 = 0.0;
+                                for (x, y, off) in &samples {
+                                    let top = self.surface_below(x + dd.x, y + dd.y, &ids);
+                                    floor = floor.max(top - off);
+                                }
+                                dd.z = floor - sb.min.z;
+                            }
+                            for (id, sp) in start {
                                 if let Some(ob) = self.doc.find_mut(id) {
-                                    ob.pos = DVec3::new(sp.x + dd.x, sp.y + dd.y, sp.z);
+                                    ob.pos = sp + dd;
                                 }
                             }
                             self.touch();
@@ -1740,6 +1782,7 @@ impl App {
             Drag::None => {}
         }
         if resp.drag_stopped() {
+            self.guides.clear();
             if let Drag::Box { start } = self.drag {
                 if let Some(p) = pointer {
                     let r = Rect::from_two_pos(start, p);
@@ -1785,6 +1828,11 @@ impl App {
                 Tool::LayFlat => {
                     if let Some(h) = hit {
                         self.lay_flat(&h);
+                    }
+                }
+                Tool::SnapFaces => {
+                    if let Some(h) = hit {
+                        self.snap_face_click(&h);
                     }
                 }
             }
@@ -1856,6 +1904,23 @@ impl App {
                 }
             }
         }
+        for (a, b) in &self.guides {
+            if let (Some(pa), Some(pb)) = (self.camera.project(rect, *a), self.camera.project(rect, *b)) {
+                painter.line_segment([pa, pb], Stroke::new(1.5, Color32::from_rgb(230, 40, 160)));
+            }
+        }
+        if let Some((_, p, _)) = self.snap_from {
+            if let Some(q) = self.camera.project(rect, p) {
+                painter.circle_filled(q, 6.0, Color32::from_rgb(230, 40, 160));
+                painter.circle_stroke(q, 8.0, Stroke::new(1.5, Color32::WHITE));
+            }
+        }
+        // drop new shapes dragged in from the Shapes panel
+        if let Some(idx) = resp.dnd_release_payload::<usize>() {
+            if let Some(p) = pointer {
+                self.add_shape_at(*idx, rect, p);
+            }
+        }
         // view cube-ish buttons
         let area = Rect::from_min_size(rect.right_top() + Vec2::new(-190.0, 8.0), Vec2::new(182.0, 26.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
@@ -1871,6 +1936,200 @@ impl App {
         if self.doc.objects.is_empty() {
             painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click a shape on the left to begin", egui::FontId::proportional(20.0), Color32::from_gray(110));
         }
+    }
+
+    fn begin_move(&mut self, hit: DVec3) -> Drag {
+        self.refresh_world();
+        let ids: Vec<u64> = self.selection.clone();
+        let start: Vec<(u64, DVec3)> = self.selected().iter().map(|o| (o.id, o.pos)).collect();
+        let sb = self.selection_bounds();
+        let others: Vec<Aabb> = self.entries.iter().filter(|e| !ids.contains(&e.id)).map(|e| e.mesh.bounds()).collect();
+        // sample the selection's underside so it can rest on other parts' tops
+        let mut samples = Vec::new();
+        let n = 7;
+        for i in 0..n {
+            for j in 0..n {
+                let x = sb.min.x + (sb.max.x - sb.min.x) * (i as f64 + 0.5) / n as f64;
+                let y = sb.min.y + (sb.max.y - sb.min.y) * (j as f64 + 0.5) / n as f64;
+                if let Some(z) = self.underside(x, y, &ids) {
+                    samples.push((x, y, z - sb.min.z));
+                }
+            }
+        }
+        for c in [sb.min, DVec3::new(sb.max.x, sb.min.y, 0.0), DVec3::new(sb.min.x, sb.max.y, 0.0), sb.max] {
+            let (x, y) = (c.x * 0.98 + sb.center().x * 0.02, c.y * 0.98 + sb.center().y * 0.02);
+            if let Some(z) = self.underside(x, y, &ids) {
+                samples.push((x, y, z - sb.min.z));
+            }
+        }
+        // "riding" only if it currently rests on the plate or on another part
+        let mut floor: f64 = 0.0;
+        for (x, y, off) in &samples {
+            floor = floor.max(self.surface_below(*x, *y, &ids) - off);
+        }
+        let riding = (sb.min.z - floor).abs() < 0.05 || sb.min.z.abs() < 0.05;
+        Drag::Move { plane_z: hit.z, start_hit: hit, start, sb, others, riding, samples }
+    }
+
+    /// Closest hit of a ray against solid objects not in `exclude`.
+    fn pick_excluding(&mut self, o: DVec3, d: DVec3, exclude: &[u64]) -> Option<DVec3> {
+        let mut best: Option<f64> = None;
+        for e in self.entries.iter_mut() {
+            if e.hole || exclude.contains(&e.id) {
+                continue;
+            }
+            let bvh = e.bvh.get_or_insert_with(|| Arc::new(Bvh::build(&e.mesh))).clone();
+            if let Some((t, _)) = bvh.raycast(&e.mesh, o, d, None) {
+                if best.map_or(true, |b| t < b) {
+                    best = Some(t);
+                }
+            }
+        }
+        best.map(|t| o + d * t)
+    }
+
+    /// Height of the highest upward-facing surface under (x, y), ignoring `exclude`. 0 = plate.
+    fn surface_below(&mut self, x: f64, y: f64, exclude: &[u64]) -> f64 {
+        let o = DVec3::new(x, y, 1.0e5);
+        let d = DVec3::NEG_Z;
+        let mut best: f64 = 0.0;
+        for e in self.entries.iter_mut() {
+            if e.hole || exclude.contains(&e.id) {
+                continue;
+            }
+            let b = e.mesh.bounds();
+            if x < b.min.x || x > b.max.x || y < b.min.y || y > b.max.y {
+                continue;
+            }
+            let bvh = e.bvh.get_or_insert_with(|| Arc::new(Bvh::build(&e.mesh))).clone();
+            if let Some((t, _)) = bvh.raycast(&e.mesh, o, d, None) {
+                best = best.max(o.z - t);
+            }
+        }
+        best
+    }
+
+    /// Lowest point of the selection directly above/below (x, y).
+    fn underside(&mut self, x: f64, y: f64, ids: &[u64]) -> Option<f64> {
+        let o = DVec3::new(x, y, -1.0e5);
+        let mut best: Option<f64> = None;
+        for e in self.entries.iter_mut() {
+            if !ids.contains(&e.id) || e.hole {
+                continue;
+            }
+            let bvh = e.bvh.get_or_insert_with(|| Arc::new(Bvh::build(&e.mesh))).clone();
+            if let Some((t, _)) = bvh.raycast(&e.mesh, o, DVec3::Z, None) {
+                let z = o.z + t;
+                best = Some(best.map_or(z, |b: f64| b.min(z)));
+            }
+        }
+        best
+    }
+
+    /// Snap the moving selection's edges/centres to nearby objects' edges/centres.
+    fn snap_to_neighbours(&mut self, sb: &Aabb, others: &[Aabb], dd: &mut DVec3) {
+        let thr = (self.camera.dist * 0.012).clamp(0.5, 8.0);
+        for axis in 0..2 {
+            let moved_min = sb.min[axis] + dd[axis];
+            let moved_max = sb.max[axis] + dd[axis];
+            let mine = [moved_min, (moved_min + moved_max) * 0.5, moved_max];
+            let mut best: Option<(f64, f64, &Aabb)> = None; // (correction, target value, other)
+            for ob in others {
+                // only consider neighbours that are reasonably close on the other axis
+                let oa = 1 - axis;
+                let gap = (ob.min[oa] - (sb.max[oa] + dd[oa])).max((sb.min[oa] + dd[oa]) - ob.max[oa]).max(0.0);
+                if gap > 60.0 {
+                    continue;
+                }
+                for t in [ob.min[axis], (ob.min[axis] + ob.max[axis]) * 0.5, ob.max[axis]] {
+                    for m in mine {
+                        let c = t - m;
+                        if c.abs() < thr && best.map_or(true, |b| c.abs() < b.0.abs()) {
+                            best = Some((c, t, ob));
+                        }
+                    }
+                }
+            }
+            if let Some((c, t, ob)) = best {
+                dd[axis] += c;
+                let oa = 1 - axis;
+                let lo = ob.min[oa].min(sb.min[oa] + dd[oa]) - 5.0;
+                let hi = ob.max[oa].max(sb.max[oa] + dd[oa]) + 5.0;
+                let z = 0.05;
+                let (a, b) = if axis == 0 {
+                    (DVec3::new(t, lo, z), DVec3::new(t, hi, z))
+                } else {
+                    (DVec3::new(lo, t, z), DVec3::new(hi, t, z))
+                };
+                self.guides.push((a, b));
+            }
+        }
+    }
+
+    fn snap_face_click(&mut self, h: &Hit) {
+        let e = &self.entries[h.entry];
+        let (id, (n, _)) = (e.id, e.mesh.tri_normal_area(h.tri as usize));
+        match self.snap_from {
+            None => {
+                if self.doc.find(id).map(|o| o.locked).unwrap_or(true) {
+                    self.status = "That object is locked.".into();
+                    return;
+                }
+                self.snap_from = Some((id, h.point, n));
+                self.selection = vec![id];
+                self.geometry_dirty = true;
+                self.status = "Now click the face to attach it to.".into();
+            }
+            Some((src, pa, na)) => {
+                if src == id {
+                    self.status = "Pick a face on a different object.".into();
+                    return;
+                }
+                let Some(o) = self.doc.find(src).cloned() else { return };
+                let q = DQuat::from_rotation_arc(na, -n);
+                let local = o.transform().inverse().transform_point3(pa);
+                let mut moved = o.clone();
+                moved.set_rotation(q * o.rotation());
+                // place so the clicked point lands on the target point
+                let now = moved.transform().transform_point3(local);
+                moved.pos += h.point - now;
+                if let Some(slot) = self.doc.find_mut(src) {
+                    *slot = moved;
+                }
+                self.snap_from = None;
+                self.selection = vec![src, id];
+                self.touch();
+                self.status = "Snapped face to face. Press Group (Ctrl/Cmd+G) to join them.".into();
+            }
+        }
+    }
+
+    fn add_shape_at(&mut self, idx: usize, rect: Rect, p: Pos2) {
+        let hit = self.pick(rect, p);
+        let target = match &hit {
+            Some(h) if !self.entries[h.entry].hole => Some(h.point),
+            _ => {
+                let (o, d) = self.camera.ray(rect, p);
+                if d.z.abs() > 1e-6 && (-o.z / d.z) > 0.0 { Some(o + d * (-o.z / d.z)) } else { None }
+            }
+        };
+        self.add_shape(idx);
+        let Some(t) = target else { return };
+        let Some(&id) = self.selection.first() else { return };
+        let size = self.doc.find(id).map(|o| o.size).unwrap_or(DVec3::ONE);
+        let (mut x, mut y) = (t.x, t.y);
+        if self.snap > 0.0 {
+            x = (x / self.snap).round() * self.snap;
+            y = (y / self.snap).round() * self.snap;
+        }
+        let mut floor: f64 = 0.0;
+        for (dx, dy) in [(0.0, 0.0), (-0.45, -0.45), (0.45, -0.45), (-0.45, 0.45), (0.45, 0.45)] {
+            floor = floor.max(self.surface_below(x + dx * size.x, y + dy * size.y, &[id]));
+        }
+        if let Some(o) = self.doc.find_mut(id) {
+            o.pos = DVec3::new(x, y, floor);
+        }
+        self.touch();
     }
 
     /// Feed the gizmo our own pointer state. (The crate's `interact` puts an input widget
@@ -2061,7 +2320,7 @@ impl App {
                 ui.label("Mouse: left-drag an object to move it on the plate · left-drag empty space or right-drag to orbit · middle-drag or Shift+right-drag to pan · scroll/pinch to zoom · Shift+drag on empty space to box-select · Alt+drag to drag out a copy.");
                 ui.label("Keys (Ctrl on Windows, Cmd on Mac): Z undo · Shift+Z / Y redo · C/V copy/paste · D duplicate · G group · Shift+G ungroup · A select all · S save.");
                 ui.label("Plain keys: H make hole · S make solid · D drop to bed · F fit view · P paint · B fill · 1/2/3 move/rotate/scale gizmo · arrows nudge (Shift ×10, Ctrl/Cmd+↑↓ raise/lower) · Delete removes · Esc back to select.");
-                ui.label("Gizmo snaps to the grid; hold Shift while dragging for free movement.");
+                ui.label("Dragged parts ride on top of other parts and snap to their edges and centres (pink guides). Snap faces tool: click a face to move, then the face to attach to. Drag shapes from the panel onto the plate or a part. Hold Shift while dragging for free movement with no snapping.");
             });
             self.show_help = open;
         }
