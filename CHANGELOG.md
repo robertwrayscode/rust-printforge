@@ -2,6 +2,13 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.1.4 — 2026-11-24
+- **The paint brush now paints like a brush:** a round dab the size of the brush radius,
+  and smooth strokes when you drag, instead of colouring whole triangles (which on a box
+  meant half a side at a time). The surface is refined automatically just under the brush.
+  Painting a shape turns it into a mesh (size and position stay editable).
+- Bucket fill still fills whole flat areas up to sharp edges.
+
 ## 0.1.3 — 2026-11-24
 - **Fixed:** couldn't line parts up exactly. Grid snap now snaps the part's *position*
   (e.g. X = 0.0), not the distance moved, so a part that started at X = -8.57 no longer

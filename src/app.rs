@@ -934,15 +934,40 @@ impl App {
                 }
             }
         } else {
-            let r2 = self.brush_mm * self.brush_mm;
-            for t in 0..n {
-                let pts = local.tri_points(t);
-                let near = pts.iter().any(|p| p.distance_squared(lp) <= r2) || local.tri_centroid(t).distance_squared(lp) <= r2 || t == hit.tri as usize;
-                if near && paint[t] != value {
-                    paint[t] = value;
-                    changed = true;
+            // Real brush: refine the surface under the brush so it paints a round dab
+            // instead of whole (possibly huge) triangles.
+            let r = self.brush_mm.max(0.05);
+            let target = (r * 0.5).max(0.2);
+            let mut m = local.clone();
+            for (c, &pc) in m.colors.iter_mut().zip(&paint) {
+                if pc != NO_COLOR {
+                    *c = pc;
                 }
             }
+            let refined = m.refine_near(lp, r + target, target, 2_500_000);
+            let mut out = refined;
+            let mut any = false;
+            for t in 0..out.tris.len() {
+                let [a, b, c] = out.tri_points(t);
+                let cen = (a + b + c) / 3.0;
+                if cen.distance(lp) <= r || crate::mesh::closest_on_tri(lp, a, b, c).distance(lp) <= r * 0.35 {
+                    if out.colors[t] != value {
+                        out.colors[t] = value;
+                        any = true;
+                    }
+                }
+            }
+            if any || out.tris.len() != n {
+                if let Some(ob) = self.doc.find_mut(id) {
+                    if matches!(ob.kind, Kind::Shape(_)) && !self.status.starts_with("Painting turned") {
+                        self.status = "Painting turned this shape into a mesh (size/position still editable; shape settings no longer apply).".into();
+                    }
+                    ob.kind = Kind::Mesh(Arc::new(out));
+                    ob.paint = None;
+                }
+                self.touch();
+            }
+            return;
         }
         if changed {
             if let Some(o) = self.doc.find_mut(id) {
@@ -1264,7 +1289,7 @@ impl App {
 
     fn paint_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading(if self.tool == Tool::Paint { "Paint brush" } else { "Bucket fill" });
-        ui.label("Pick a filament, then click/drag on a model. Painting is per-face; use Refine for finer detail.");
+        ui.label("Pick a filament, then click/drag on a model. The brush paints a round dab of the radius below.");
         ui.horizontal_wrapped(|ui| {
             for (i, f) in self.doc.filaments.iter().enumerate() {
                 let sel = self.paint_slot as usize == i && !self.erase;

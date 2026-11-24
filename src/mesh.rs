@@ -649,3 +649,137 @@ mod bvh_tests {
         assert!((o.z - hit.unwrap().0 - 20.0).abs() < 1e-6, "{:?}", hit);
     }
 }
+
+/// Closest point on triangle abc to p (Ericson, Real-Time Collision Detection).
+pub fn closest_on_tri(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot(ap);
+    let d2 = ac.dot(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let d3 = ab.dot(bp);
+    let d4 = ac.dot(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let d5 = ab.dot(cp);
+    let d6 = ac.dot(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
+}
+
+impl Mesh {
+    /// Split the given (undirected) edges at their midpoints. Neighbouring triangles share
+    /// the split, so the surface stays watertight. Triangle colours are inherited.
+    pub fn split_edges(&self, edges: &std::collections::HashSet<(u32, u32)>) -> Mesh {
+        let mut m = self.clone();
+        let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
+        for &(a, b) in edges {
+            let p = (m.verts[a as usize] + m.verts[b as usize]) * 0.5;
+            m.verts.push(p);
+            mids.insert((a.min(b), a.max(b)), (m.verts.len() - 1) as u32);
+        }
+        let mut nt = Vec::with_capacity(m.tris.len() + edges.len() * 2);
+        let mut nc = Vec::with_capacity(nt.capacity());
+        for (t, &c) in self.tris.iter().zip(&self.colors) {
+            let e = |a: u32, b: u32| mids.get(&(a.min(b), a.max(b))).copied();
+            let (a, b, cc) = (t[0], t[1], t[2]);
+            let (ab, bc, ca) = (e(a, b), e(b, cc), e(cc, a));
+            let mut push = |x: [u32; 3]| {
+                nt.push(x);
+                nc.push(c);
+            };
+            match (ab, bc, ca) {
+                (None, None, None) => push([a, b, cc]),
+                (Some(x), None, None) => { push([a, x, cc]); push([x, b, cc]); }
+                (None, Some(y), None) => { push([a, b, y]); push([a, y, cc]); }
+                (None, None, Some(z)) => { push([a, b, z]); push([z, b, cc]); }
+                (Some(x), Some(y), None) => { push([a, x, cc]); push([x, b, y]); push([x, y, cc]); }
+                (None, Some(y), Some(z)) => { push([a, b, z]); push([z, b, y]); push([z, y, cc]); }
+                (Some(x), None, Some(z)) => { push([a, x, z]); push([x, b, cc]); push([x, cc, z]); }
+                (Some(x), Some(y), Some(z)) => { push([a, x, z]); push([x, b, y]); push([z, y, cc]); push([x, y, z]); }
+            }
+        }
+        m.tris = nt;
+        m.colors = nc;
+        m
+    }
+
+    /// Refine only near point `p` (within `radius`) until edges there are <= `target`.
+    pub fn refine_near(&self, p: DVec3, radius: f64, target: f64, max_tris: usize) -> Mesh {
+        let mut m = self.clone();
+        for _ in 0..14 {
+            if m.tris.len() >= max_tris {
+                break;
+            }
+            let mut edges = std::collections::HashSet::new();
+            let t2 = target * target;
+            for t in 0..m.tris.len() {
+                let [a, b, c] = m.tri_points(t);
+                if closest_on_tri(p, a, b, c).distance(p) > radius {
+                    continue;
+                }
+                let tri = m.tris[t];
+                for k in 0..3 {
+                    let (i, j) = (tri[k], tri[(k + 1) % 3]);
+                    if m.verts[i as usize].distance_squared(m.verts[j as usize]) > t2 {
+                        edges.insert((i.min(j), i.max(j)));
+                    }
+                }
+            }
+            if edges.is_empty() {
+                break;
+            }
+            m = m.split_edges(&edges);
+        }
+        m
+    }
+}
+
+#[cfg(test)]
+mod refine_tests {
+    use super::*;
+    #[test]
+    fn local_refine_stays_watertight_and_small() {
+        let m = crate::shapes::Shape::Box { radius: 0.0, steps: 1 }.generate(DVec3::splat(20.0));
+        let p = DVec3::new(10.0, 0.0, 10.0); // centre of the +X face
+        let r = m.refine_near(p, 2.0, 1.0, 1_000_000);
+        // watertight: every directed edge has its opposite
+        let mut e = std::collections::HashSet::new();
+        for t in &r.tris {
+            for k in 0..3 {
+                e.insert((t[k], t[(k + 1) % 3]));
+            }
+        }
+        assert!(e.iter().all(|&(a, b)| e.contains(&(b, a))));
+        assert!((r.volume() - 8000.0).abs() < 1e-6);
+        // triangles touching the brush are small
+        for t in 0..r.tris.len() {
+            let [a, b, c] = r.tri_points(t);
+            if closest_on_tri(p, a, b, c).distance(p) < 2.0 {
+                assert!(a.distance(b).max(b.distance(c)).max(c.distance(a)) <= 1.0 + 1e-9);
+            }
+        }
+        assert!(r.tris.len() < 4000, "{}", r.tris.len());
+    }
+}
