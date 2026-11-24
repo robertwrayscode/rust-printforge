@@ -9,6 +9,7 @@ pub mod mesh;
 pub mod render;
 pub mod scene;
 pub mod shapes;
+pub mod thumbs;
 
 use std::path::PathBuf;
 

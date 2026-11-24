@@ -171,6 +171,7 @@ pub struct App {
     export_confirm: Option<(ExportKind, PathBuf)>,
     // misc
     file: Option<PathBuf>,
+    thumbs: Vec<egui::TextureHandle>,
     edits: u64,
     saved_edits: u64,
     confirm_discard: Option<PendingAction>,
@@ -238,6 +239,7 @@ impl App {
             pending_export: None,
             export_confirm: None,
             file,
+            thumbs: vec![],
             edits: 0,
             saved_edits: 0,
             confirm_discard: None,
@@ -1189,10 +1191,27 @@ impl App {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Shapes");
             ui.label(RichText::new("Click to add, or drag onto the plate or another object. Make any shape a Hole to cut with it.").small().weak());
-            egui::Grid::new("shapes").num_columns(2).spacing([4.0, 4.0]).show(ui, |ui| {
+            if self.thumbs.is_empty() {
+                for i in 0..LIBRARY.len() {
+                    let img = egui::ColorImage::from_rgba_premultiplied([crate::thumbs::THUMB, crate::thumbs::THUMB], &crate::thumbs::render(i));
+                    self.thumbs.push(ui.ctx().load_texture(format!("shape-thumb-{i}"), img, egui::TextureOptions::LINEAR));
+                }
+            }
+            let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
+            let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
+            egui::Grid::new("shapes").num_columns(cols).spacing([4.0, 4.0]).show(ui, |ui| {
                 for (i, info) in LIBRARY.iter().enumerate() {
                     // one widget that both clicks (add) and drags (drop onto the plate/a part)
-                    let r = ui.add_sized([108.0, 26.0], egui::Button::new(info.name).sense(Sense::click_and_drag()));
+                    let (rect, r) = ui.allocate_exact_size(tile, Sense::click_and_drag());
+                    let bg = if r.hovered() || r.dragged() { Color32::from_rgb(222, 232, 248) } else { Color32::from_gray(238) };
+                    ui.painter().rect_filled(rect, 6.0, bg);
+                    if r.hovered() {
+                        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, Color32::from_rgb(90, 140, 220)), egui::StrokeKind::Inside);
+                    }
+                    let img_rect = Rect::from_center_size(rect.center() - Vec2::new(0.0, 8.0), Vec2::splat(50.0));
+                    ui.painter().image(self.thumbs[i].id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    ui.painter().text(Pos2::new(rect.center().x, rect.bottom() - 9.0), egui::Align2::CENTER_CENTER, info.name, egui::FontId::proportional(11.5), Color32::from_gray(60));
+                    let r = r.on_hover_text(format!("{} — click to add, or drag onto the plate or another part", info.name));
                     if r.clicked() {
                         self.add_shape(i);
                     }
@@ -1201,16 +1220,17 @@ impl App {
                     }
                     if r.dragged() {
                         if let Some(p) = ui.ctx().pointer_hover_pos() {
-                            ui.painter().clone().with_layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dnd")))
-                                .text(p + Vec2::new(12.0, 12.0), egui::Align2::LEFT_TOP, format!("+ {}", info.name), egui::FontId::proportional(14.0), Color32::from_rgb(20, 90, 220));
+                            let layer = ui.painter().clone().with_layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dnd")));
+                            layer.image(self.thumbs[i].id(), Rect::from_center_size(p + Vec2::new(4.0, 4.0), Vec2::splat(44.0)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::from_white_alpha(200));
                         }
                     }
-                    if i % 2 == 1 {
+                    if (i + 1) % cols == 0 {
                         ui.end_row();
                     }
                 }
             });
-            if ui.add_sized([220.0, 24.0], egui::Button::new("Import STL / OBJ / 3MF…")).clicked() {
+            ui.add_space(4.0);
+            if ui.add_sized([ui.available_width(), 24.0], egui::Button::new("Import STL / OBJ / 3MF…")).clicked() {
                 self.import();
             }
             ui.separator();

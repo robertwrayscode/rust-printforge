@@ -2,6 +2,11 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.1.7 — 2026-11-24
+- **Shape tiles:** the Shapes panel shows a small 3D picture of each shape (drawn from the
+  real shape) instead of text buttons. Click a tile to add it, or drag it straight into the
+  workspace or onto another part.
+
 ## 0.1.6 — 2026-11-24
 - **Print check verdict:** a clear green "Ready to print" or red "Not ready to print" box at
   the top of the results, with a colour key (red = must fix, orange = worth knowing,
