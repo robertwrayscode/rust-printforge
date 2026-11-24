@@ -2,6 +2,17 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.1.3 — 2026-11-24
+- **Fixed:** couldn't line parts up exactly. Grid snap now snaps the part's *position*
+  (e.g. X = 0.0), not the distance moved, so a part that started at X = -8.57 no longer
+  stays stuck on .57 values.
+- **Fixed:** edge/centre snapping now works at any zoom level (it uses a distance on screen),
+  and also works when moving with the gizmo arrows.
+- **Fixed:** grabbing the middle of a part sometimes grabbed the gizmo's centre circle, which
+  moved parts parallel to the screen and changed their height (e.g. 20 → 19.88). The
+  centre handles are removed; drag the part itself, or the arrows/plane square.
+- Dragging only follows upward-facing surfaces (tops), not side walls.
+
 ## 0.1.2 — 2026-11-24
 - **Objects snap to each other.**
   - *Ride on top:* drag a part over another and it sits on that part's top surface;

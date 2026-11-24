@@ -137,6 +137,7 @@ pub struct App {
     gizmo_kind: GizmoKind,
     gizmo_start: Option<Vec<(u64, DVec3, DVec3, DVec3)>>,
     gizmo_grab: bool,
+    gizmo_ctx: (Aabb, Vec<Aabb>),
     snap: f64,
     renderer: SharedRenderer,
     entries: Vec<Entry>,
@@ -152,6 +153,7 @@ pub struct App {
     // measure
     measure: Vec<DVec3>,
     snap_from: Option<(u64, DVec3, DVec3)>,
+    last_view_rect: Rect,
     guides: Vec<(DVec3, DVec3)>,
     // check
     report: Option<Report>,
@@ -201,6 +203,7 @@ impl App {
             gizmo_kind: GizmoKind::Move,
             gizmo_start: None,
             gizmo_grab: false,
+            gizmo_ctx: (Aabb::empty(), vec![]),
             snap: 1.0,
             renderer: Arc::new(Mutex::new(Renderer::default())),
             entries: vec![],
@@ -214,6 +217,7 @@ impl App {
             refine_mm: 1.0,
             measure: vec![],
             snap_from: None,
+            last_view_rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
             guides: vec![],
             report: None,
             check_rx: None,
@@ -1565,6 +1569,7 @@ impl App {
     fn viewport(&mut self, ui: &mut egui::Ui) {
         let rect = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(rect, Sense::click_and_drag());
+        self.last_view_rect = rect;
         let aspect = (rect.width() / rect.height().max(1.0)) as f64;
         let view = self.camera.view();
         let proj = self.camera.proj(aspect);
@@ -1585,10 +1590,12 @@ impl App {
             let b = self.selection_bounds();
             let single = if self.selection.len() == 1 { self.doc.find(self.selection[0]).cloned() } else { None };
             let rot = single.as_ref().map(|o| o.rotation()).unwrap_or(DQuat::IDENTITY);
+            // No centre handles: they sit on top of the object and would steal a normal drag
+            // (the view-plane move handle also changes height, which looks like sinking).
             let modes = match self.gizmo_kind {
-                GizmoKind::Move => GizmoMode::all_from_kind(transform_gizmo_egui::config::GizmoModeKind::Translate),
-                GizmoKind::Rotate => GizmoMode::all_from_kind(transform_gizmo_egui::config::GizmoModeKind::Rotate),
-                _ => GizmoMode::all_from_kind(transform_gizmo_egui::config::GizmoModeKind::Scale),
+                GizmoKind::Move => GizmoMode::TranslateX | GizmoMode::TranslateY | GizmoMode::TranslateZ | GizmoMode::TranslateXY,
+                GizmoKind::Rotate => GizmoMode::RotateX | GizmoMode::RotateY | GizmoMode::RotateZ,
+                _ => GizmoMode::ScaleX | GizmoMode::ScaleY | GizmoMode::ScaleZ | GizmoMode::ScaleXY,
             };
             let shift = ui.input(|i| i.modifiers.shift);
             self.gizmo.update_config(GizmoConfig {
@@ -1613,12 +1620,22 @@ impl App {
                 gizmo_active = true;
                 if self.gizmo_start.is_none() {
                     self.gizmo_start = Some(self.selected().iter().map(|o| (o.id, o.pos, o.rot, o.size)).collect());
+                    let ids = self.selection.clone();
+                    let others = self.entries.iter().filter(|e| !ids.contains(&e.id) && !e.hole).map(|e| e.mesh.bounds()).collect();
+                    self.gizmo_ctx = (b, others);
                 }
                 let start = self.gizmo_start.clone().unwrap();
                 let pivot = b.center();
                 match result {
                     GizmoResult::Translation { total, .. } => {
-                        let d = DVec3::from(total);
+                        let mut d = DVec3::from(total);
+                        if !shift {
+                            let moving = [d.x.abs() > 1e-9, d.y.abs() > 1e-9, d.z.abs() > 1e-9];
+                            self.grid_snap_abs(start[0].1, &mut d, moving);
+                            self.guides.clear();
+                            let (gsb, gothers) = self.gizmo_ctx.clone();
+                            self.snap_to_neighbours(&gsb, &gothers, &mut d, [moving[0], moving[1]]);
+                        }
                         for (id, p, _, _) in &start {
                             if let Some(o) = self.doc.find_mut(*id) {
                                 o.pos = *p + d;
@@ -1667,6 +1684,9 @@ impl App {
             self.gizmo_grab = false;
         }
         if !gizmo_active && !ui.input(|i| i.pointer.primary_down()) {
+            if self.gizmo_start.is_some() {
+                self.guides.clear();
+            }
             self.gizmo_start = None;
         }
 
@@ -1739,14 +1759,13 @@ impl App {
                             let h = surf.unwrap_or(o + d * t);
                             let mut dd = h - start_hit;
                             dd.z = 0.0;
-                            if self.snap > 0.0 {
-                                dd.x = (dd.x / self.snap).round() * self.snap;
-                                dd.y = (dd.y / self.snap).round() * self.snap;
-                            }
-                            self.guides.clear();
                             let free = mods.shift;
                             if !free {
-                                self.snap_to_neighbours(&sb, &others, &mut dd);
+                                self.grid_snap_abs(start[0].1, &mut dd, [true, true, false]);
+                            }
+                            self.guides.clear();
+                            if !free {
+                                self.snap_to_neighbours(&sb, &others, &mut dd, [true, true]);
                             }
                             let ids: Vec<u64> = start.iter().map(|x| x.0).collect();
                             if riding && !free {
@@ -1973,19 +1992,20 @@ impl App {
 
     /// Closest hit of a ray against solid objects not in `exclude`.
     fn pick_excluding(&mut self, o: DVec3, d: DVec3, exclude: &[u64]) -> Option<DVec3> {
-        let mut best: Option<f64> = None;
+        let mut best: Option<(f64, f64)> = None;
         for e in self.entries.iter_mut() {
             if e.hole || exclude.contains(&e.id) {
                 continue;
             }
             let bvh = e.bvh.get_or_insert_with(|| Arc::new(Bvh::build(&e.mesh))).clone();
-            if let Some((t, _)) = bvh.raycast(&e.mesh, o, d, None) {
-                if best.map_or(true, |b| t < b) {
-                    best = Some(t);
+            if let Some((t, tri)) = bvh.raycast(&e.mesh, o, d, None) {
+                if best.map_or(true, |b| t < b.0) {
+                    best = Some((t, e.mesh.tri_normal_area(tri as usize).0.z));
                 }
             }
         }
-        best.map(|t| o + d * t)
+        // only follow upward-facing surfaces (tops); over a side wall keep the current height
+        best.filter(|b| b.1 > 0.5).map(|b| o + d * b.0)
     }
 
     /// Height of the highest upward-facing surface under (x, y), ignoring `exclude`. 0 = plate.
@@ -2027,9 +2047,33 @@ impl App {
     }
 
     /// Snap the moving selection's edges/centres to nearby objects' edges/centres.
-    fn snap_to_neighbours(&mut self, sb: &Aabb, others: &[Aabb], dd: &mut DVec3) {
-        let thr = (self.camera.dist * 0.012).clamp(0.5, 8.0);
+    /// Snap the object's absolute position (not the distance moved) to the grid.
+    fn grid_snap_abs(&self, start_pos: DVec3, dd: &mut DVec3, axes: [bool; 3]) {
+        if self.snap <= 0.0 {
+            return;
+        }
+        for a in 0..3 {
+            if axes[a] {
+                let target = ((start_pos[a] + dd[a]) / self.snap).round() * self.snap;
+                dd[a] = target - start_pos[a];
+            }
+        }
+    }
+
+    fn snap_to_neighbours(&mut self, sb: &Aabb, others: &[Aabb], dd: &mut DVec3, axes: [bool; 2]) {
+        // ~12 screen pixels, but never less than a grid step so the grid can't jump past it
+        let c = sb.center() + *dd;
+        let right = self.camera.view().inverse().transform_vector3(DVec3::X);
+        let rect = self.last_view_rect;
+        let px_per_mm = match (self.camera.project(rect, c), self.camera.project(rect, c + right)) {
+            (Some(a), Some(b)) => (a.distance(b) as f64).max(1e-3),
+            _ => 1.0,
+        };
+        let thr = (12.0 / px_per_mm).max(self.snap * 0.75).clamp(0.3, 20.0);
         for axis in 0..2 {
+            if !axes[axis] {
+                continue;
+            }
             let moved_min = sb.min[axis] + dd[axis];
             let moved_max = sb.max[axis] + dd[axis];
             let mine = [moved_min, (moved_min + moved_max) * 0.5, moved_max];
