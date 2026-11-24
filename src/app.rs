@@ -91,6 +91,13 @@ pub enum GizmoKind {
     Scale,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PendingAction {
+    Close,
+    New,
+    Open,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExportKind {
     Bambu,
@@ -164,6 +171,11 @@ pub struct App {
     export_confirm: Option<(ExportKind, PathBuf)>,
     // misc
     file: Option<PathBuf>,
+    edits: u64,
+    saved_edits: u64,
+    confirm_discard: Option<PendingAction>,
+    allow_close: bool,
+    last_title: String,
     status: String,
     uniform_scale: bool,
     show_array: bool,
@@ -226,6 +238,11 @@ impl App {
             pending_export: None,
             export_confirm: None,
             file,
+            edits: 0,
+            saved_edits: 0,
+            confirm_discard: None,
+            allow_close: false,
+            last_title: String::new(),
             status: "Welcome to PrintForge — pick a shape on the left to start.".into(),
             uniform_scale: false,
             show_array: false,
@@ -241,6 +258,7 @@ impl App {
     // ---------------------------------------------------------- doc helpers
 
     fn touch(&mut self) {
+        self.edits += 1;
         self.changed = true;
         self.geometry_dirty = true;
         self.report = None;
@@ -284,6 +302,7 @@ impl App {
     }
 
     fn after_history(&mut self) {
+        self.edits += 1;
         let ids: Vec<u64> = self.doc.objects.iter().map(|o| o.id).collect();
         self.selection.retain(|s| ids.contains(s));
         self.geometry_dirty = true;
@@ -599,6 +618,33 @@ impl App {
         self.file = None;
         self.geometry_dirty = true;
         self.report = None;
+        self.edits = 0;
+        self.saved_edits = 0;
+    }
+
+    fn unsaved(&self) -> bool {
+        self.edits != self.saved_edits && !self.doc.objects.is_empty()
+            || self.edits != self.saved_edits && self.file.is_some()
+    }
+
+    /// Run an action that would lose work, asking first if there are unsaved changes.
+    fn guarded(&mut self, a: PendingAction, ctx: &egui::Context) {
+        if self.unsaved() {
+            self.confirm_discard = Some(a);
+        } else {
+            self.run_pending(a, ctx);
+        }
+    }
+
+    fn run_pending(&mut self, a: PendingAction, ctx: &egui::Context) {
+        match a {
+            PendingAction::Close => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            PendingAction::New => self.new_doc(),
+            PendingAction::Open => self.open(),
+        }
     }
 
     fn open(&mut self) {
@@ -610,25 +656,33 @@ impl App {
                 self.committed = self.doc.clone();
                 self.status = format!("Opened {}", p.display());
                 self.file = Some(p);
+                self.edits = 0;
+                self.saved_edits = 0;
             }
             Err(e) => self.status = format!("Couldn't open: {e}"),
         }
     }
 
-    fn save(&mut self, as_new: bool) {
+    /// Returns true if the project was saved.
+    fn save(&mut self, as_new: bool) -> bool {
         let path = if as_new || self.file.is_none() {
             rfd::FileDialog::new().add_filter("PrintForge project", &["pforge"]).set_file_name("design.pforge").save_file()
         } else {
             self.file.clone()
         };
-        let Some(p) = path else { return };
+        let Some(p) = path else { return false };
         let p = if p.extension().is_none() { p.with_extension("pforge") } else { p };
         match io::save_project(&p, &self.doc) {
             Ok(()) => {
                 self.status = format!("Saved {}", p.display());
                 self.file = Some(p);
+                self.saved_edits = self.edits;
+                true
             }
-            Err(e) => self.status = format!("Save failed: {e}"),
+            Err(e) => {
+                self.status = format!("Save failed: {e}");
+                false
+            }
         }
     }
 
@@ -983,11 +1037,11 @@ impl App {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("New").clicked() {
-                    self.new_doc();
+                    self.guarded(PendingAction::New, &ui.ctx().clone());
                     ui.close();
                 }
                 if ui.button("Open project…").clicked() {
-                    self.open();
+                    self.guarded(PendingAction::Open, &ui.ctx().clone());
                     ui.close();
                 }
                 if ui.button("Save").clicked() {
@@ -1137,11 +1191,19 @@ impl App {
             ui.label(RichText::new("Click to add, or drag onto the plate or another object. Make any shape a Hole to cut with it.").small().weak());
             egui::Grid::new("shapes").num_columns(2).spacing([4.0, 4.0]).show(ui, |ui| {
                 for (i, info) in LIBRARY.iter().enumerate() {
-                    let r = ui.dnd_drag_source(egui::Id::new(("shape", i)), i, |ui| {
-                        ui.add_sized([108.0, 26.0], egui::Button::new(info.name).sense(Sense::click()))
-                    });
-                    if r.inner.clicked() {
+                    // one widget that both clicks (add) and drags (drop onto the plate/a part)
+                    let r = ui.add_sized([108.0, 26.0], egui::Button::new(info.name).sense(Sense::click_and_drag()));
+                    if r.clicked() {
                         self.add_shape(i);
+                    }
+                    if r.drag_started() || r.dragged() {
+                        r.dnd_set_drag_payload(i);
+                    }
+                    if r.dragged() {
+                        if let Some(p) = ui.ctx().pointer_hover_pos() {
+                            ui.painter().clone().with_layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dnd")))
+                                .text(p + Vec2::new(12.0, 12.0), egui::Align2::LEFT_TOP, format!("+ {}", info.name), egui::FontId::proportional(14.0), Color32::from_rgb(20, 90, 220));
+                        }
                     }
                     if i % 2 == 1 {
                         ui.end_row();
@@ -1541,7 +1603,39 @@ impl App {
             ui.label(RichText::new("Not checked since the last change.").weak());
             return;
         };
-        for s in &r.summary {
+        // plain-language verdict
+        let errors = r.issues.iter().filter(|i| i.severity == Severity::Error).count();
+        let warns = r.issues.iter().filter(|i| i.severity == Severity::Warning).count();
+        let (title, sub, fg, bg) = if errors > 0 {
+            (
+                "✖  Not ready to print".to_string(),
+                format!("Fix the {errors} red problem{} below first — the print would likely fail or come out wrong.", if errors == 1 { "" } else { "s" }),
+                Color32::from_rgb(170, 20, 20),
+                Color32::from_rgb(253, 228, 228),
+            )
+        } else if warns > 0 {
+            (
+                "✔  Ready to print".to_string(),
+                format!("It will print. {warns} orange note{} below {} worth a look but won't stop the print.", if warns == 1 { "" } else { "s" }, if warns == 1 { "is" } else { "are" }),
+                Color32::from_rgb(20, 110, 40),
+                Color32::from_rgb(226, 245, 230),
+            )
+        } else {
+            (
+                "✔  Ready to print".to_string(),
+                "No problems found.".to_string(),
+                Color32::from_rgb(20, 110, 40),
+                Color32::from_rgb(226, 245, 230),
+            )
+        };
+        egui::Frame::new().fill(bg).corner_radius(6.0).inner_margin(8.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(title).size(17.0).strong().color(fg));
+            ui.label(RichText::new(sub).color(fg));
+        });
+        ui.label(RichText::new("✖ red = must fix   ⚠ orange = worth knowing   ℹ blue = info only").small().weak());
+        ui.add_space(4.0);
+        for s in r.summary.iter().filter(|s| !s.starts_with("No problems found")) {
             ui.label(RichText::new(s).small());
         }
         ui.add_space(4.0);
@@ -2393,6 +2487,34 @@ impl App {
             });
             self.show_help = open;
         }
+        if let Some(action) = self.confirm_discard {
+            let what = match action {
+                PendingAction::Close => "closing",
+                PendingAction::New => "starting a new design",
+                PendingAction::Open => "opening another project",
+            };
+            egui::Window::new("Unsaved changes").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                ui.label(RichText::new("Your design has changes that haven't been saved.").strong());
+                ui.label(format!("Save before {what}? Exported 3MF/STL files don't count as saving the project."));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Save").strong()).clicked() {
+                        self.confirm_discard = None;
+                        if self.save(false) {
+                            self.run_pending(action, ctx);
+                        }
+                    }
+                    if ui.button("Don't save").clicked() {
+                        self.confirm_discard = None;
+                        self.saved_edits = self.edits;
+                        self.run_pending(action, ctx);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_discard = None;
+                    }
+                });
+            });
+        }
         if let Some((k, p)) = self.export_confirm.clone() {
             egui::Window::new("Problems found").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                 let n = self.report.as_ref().map(|r| r.issues.iter().filter(|i| i.severity == Severity::Error).count()).unwrap_or(0);
@@ -2494,6 +2616,10 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.unsaved() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_discard = Some(PendingAction::Close);
+        }
         self.poll_check();
         if self.check_rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -2504,7 +2630,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("PrintForge v{} · {} · {}", env!("CARGO_PKG_VERSION"), self.doc.printer.name, self.file.as_ref().map(|f| f.display().to_string()).unwrap_or("unsaved".into()))).weak());
+                    ui.label(RichText::new(format!("PrintForge v{} · {} · {}", env!("CARGO_PKG_VERSION"), self.doc.printer.name, if self.unsaved() { "unsaved changes".to_string() } else { self.file.as_ref().map(|f| f.display().to_string()).unwrap_or("not saved yet".into()) })).weak());
                 });
             });
         });
@@ -2513,6 +2639,16 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
         self.windows(&ctx);
         self.commit_if_idle(&ctx);
+        let title = format!(
+            "{}{} — PrintForge v{}",
+            if self.unsaved() { "● " } else { "" },
+            self.file.as_ref().and_then(|f| f.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or("Untitled".into()),
+            env!("CARGO_PKG_VERSION")
+        );
+        if title != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_title = title;
+        }
         self.screenshot_step(&ctx);
     }
 }

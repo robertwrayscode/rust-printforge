@@ -2,6 +2,15 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.1.6 — 2026-11-24
+- **Print check verdict:** a clear green "Ready to print" or red "Not ready to print" box at
+  the top of the results, with a colour key (red = must fix, orange = worth knowing,
+  blue = info only).
+- **Unsaved-changes warning:** closing the app, starting a New design or opening another
+  project with unsaved work asks *Save / Don't save / Cancel*. The window title shows ● and
+  the status bar says "unsaved changes" until you save.
+- **Fixed:** clicking a shape in the Shapes panel didn't add it (only dragging worked) since 0.1.2.
+
 ## 0.1.5 — 2026-11-24
 - **Fixed:** a part sitting on top of another part (e.g. a cone on a box) was reported as
   "Floating above the build plate" and blocked export. It's now recognised as stacked.
