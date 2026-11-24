@@ -1875,7 +1875,7 @@ dependencies = [
 
 [[package]]
 name = "printforge"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "boolmesh",
  "earcutr",

@@ -18,16 +18,50 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 
 pub struct ExportObject {
     pub name: String,
-    /// World-space mesh; colours are filament slots (0-based into doc.filaments).
+    /// World-space mesh of all parts; colours are filament slots (0-based into doc.filaments).
     pub mesh: Mesh,
+    /// The separate parts (more than one when parts are stacked on each other).
+    pub parts: Vec<(String, Mesh)>,
 }
 
 pub fn collect_export(doc: &Document, cache: &mut MeshCache) -> Vec<ExportObject> {
-    doc.printable_meshes(cache)
+    let items: Vec<(String, Mesh)> = doc
+        .printable_meshes(cache)
         .into_iter()
         .map(|(i, mut m)| {
             m.fill_unset_color(doc.objects[i].color);
-            ExportObject { name: doc.objects[i].name.clone(), mesh: m }
+            (doc.objects[i].name.clone(), m)
+        })
+        .collect();
+    // Slicers drop every object onto the plate, so parts stacked on each other are
+    // exported as one object with several parts.
+    let bounds: Vec<crate::mesh::Aabb> = items.iter().map(|x| x.1.bounds()).collect();
+    let groups = crate::check::stack_groups(&bounds);
+    let mut order: Vec<usize> = Vec::new();
+    let mut by_group: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+    for (i, &g) in groups.iter().enumerate() {
+        if !by_group.contains_key(&g) {
+            order.push(g);
+        }
+        by_group.entry(g).or_default().push(i);
+    }
+    order
+        .into_iter()
+        .map(|g| {
+            let mut members = by_group[&g].clone();
+            members.sort_by(|&a, &b| bounds[a].min.z.partial_cmp(&bounds[b].min.z).unwrap());
+            let mut mesh = Mesh::new();
+            let mut parts = Vec::new();
+            for &i in &members {
+                mesh.append(&items[i].1);
+                parts.push(items[i].clone());
+            }
+            let name = if members.len() > 1 {
+                members.iter().map(|&i| items[i].0.as_str()).collect::<Vec<_>>().join(" + ")
+            } else {
+                items[members[0]].0.clone()
+            };
+            ExportObject { name, mesh, parts }
         })
         .collect()
 }
@@ -209,52 +243,78 @@ pub fn write_bambu_3mf(path: &Path, doc: &Document, objs: &[ExportObject]) -> Re
  <Relationship Target="/3D/3dmodel.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>"#)?;
 
-    let n = objs.len();
     let mut rels = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n");
     let mut main_objs = String::new();
     let mut build = String::new();
     let mut settings = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
     let mut plate = String::from("  <plate>\n    <metadata key=\"plater_id\" value=\"1\"/>\n    <metadata key=\"plater_name\" value=\"\"/>\n    <metadata key=\"locked\" value=\"false\"/>\n    <metadata key=\"filament_map_mode\" value=\"Auto For Flush\"/>\n");
+    // volume ids: each part is its own mesh object inside the object's sub-model file
+    let mut next_vol = 1usize;
+    let vol_ids: Vec<Vec<usize>> = objs
+        .iter()
+        .map(|ob| {
+            ob.parts
+                .iter()
+                .map(|_| {
+                    next_vol += 1;
+                    next_vol - 1
+                })
+                .collect()
+        })
+        .collect();
+    let first_main = next_vol;
     for (k, ob) in objs.iter().enumerate() {
-        let sub_id = k + 1;
-        let main_id = n + k + 1;
+        let sub_file = k + 1;
+        let main_id = first_main + k;
         let b = ob.mesh.bounds();
         let off = DVec3::new(b.center().x, b.center().y, b.min.z);
-        let dom = dominant(&ob.mesh);
-        let dom_ext = fmap[&dom];
-        let colors = |i: usize| {
-            let e = fmap[&ob.mesh.colors[i]];
-            if e == dom_ext { String::new() } else { format!(" paint_color=\"{}\"", bambu_paint_code(e)) }
-        };
-        let mut sub = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" xmlns:BambuStudio=\"http://schemas.bambulab.com/package/2021\" xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\" requiredextensions=\"p\">\n <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <resources>\n  <object id=\"{sub_id}\" p:UUID=\"{:08x}-81cb-4c03-9d28-80fed5dfa1dc\" type=\"model\">\n",
-            0x10000 * sub_id
-        );
-        sub.push_str(&mesh_xml(&ob.mesh, off, colors));
-        sub.push_str("  </object>\n </resources>\n <build/>\n</model>\n");
-        w(&mut z, &format!("3D/Objects/object_{sub_id}.model"), sub.as_bytes())?;
-        let _ = writeln!(rels, " <Relationship Target=\"/3D/Objects/object_{sub_id}.model\" Id=\"rel-{sub_id}\" Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>");
+        let obj_dom_ext = fmap[&dominant(&ob.mesh)];
+        let mut sub = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\" xmlns:BambuStudio=\"http://schemas.bambulab.com/package/2021\" xmlns:p=\"http://schemas.microsoft.com/3dmanufacturing/production/2015/06\" requiredextensions=\"p\">\n <metadata name=\"BambuStudio:3mfVersion\">1</metadata>\n <resources>\n");
+        let mut comps = String::new();
+        let mut part_cfg = String::new();
+        for (pi, (pname, pm)) in ob.parts.iter().enumerate() {
+            let vid = vol_ids[k][pi];
+            let dom_ext = fmap[&dominant(pm)];
+            let colors = |i: usize| {
+                let e = fmap[&pm.colors[i]];
+                if e == dom_ext { String::new() } else { format!(" paint_color=\"{}\"", bambu_paint_code(e)) }
+            };
+            let _ = writeln!(sub, "  <object id=\"{vid}\" p:UUID=\"{:08x}-81cb-4c03-9d28-80fed5dfa1dc\" type=\"model\">", 0x10000 * vid);
+            sub.push_str(&mesh_xml(pm, off, colors));
+            sub.push_str("  </object>\n");
+            let _ = writeln!(
+                comps,
+                "    <component p:path=\"/3D/Objects/object_{sub_file}.model\" objectid=\"{vid}\" p:UUID=\"{:08x}-b206-40ff-9872-83e8017abed1\" transform=\"1 0 0 0 1 0 0 0 1 0 0 0\"/>",
+                (main_id << 16) + pi
+            );
+            let pn = xml_escape(pname);
+            let _ = write!(
+                part_cfg,
+                "    <part id=\"{vid}\" subtype=\"normal_part\">\n      <metadata key=\"name\" value=\"{pn}\"/>\n      <metadata key=\"matrix\" value=\"1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\"/>\n      <metadata key=\"source_object_id\" value=\"{k}\"/>\n      <metadata key=\"source_volume_id\" value=\"{pi}\"/>\n      <metadata key=\"extruder\" value=\"{dom_ext}\"/>\n      <mesh_stat face_count=\"{fc}\" edges_fixed=\"0\" degenerate_facets=\"0\" facets_removed=\"0\" facets_reversed=\"0\" backwards_edges=\"0\"/>\n    </part>\n",
+                fc = pm.tris.len()
+            );
+        }
+        sub.push_str(" </resources>\n <build/>\n</model>\n");
+        w(&mut z, &format!("3D/Objects/object_{sub_file}.model"), sub.as_bytes())?;
+        let _ = writeln!(rels, " <Relationship Target=\"/3D/Objects/object_{sub_file}.model\" Id=\"rel-{sub_file}\" Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/>");
         let _ = writeln!(
             main_objs,
-            "  <object id=\"{main_id}\" p:UUID=\"{:08x}-61cb-4c03-9d28-80fed5dfa1dc\" type=\"model\">\n   <components>\n    <component p:path=\"/3D/Objects/object_{sub_id}.model\" objectid=\"{sub_id}\" p:UUID=\"{:08x}-b206-40ff-9872-83e8017abed1\" transform=\"1 0 0 0 1 0 0 0 1 0 0 0\"/>\n   </components>\n  </object>",
-            sub_id,
-            0x10000 * sub_id
+            "  <object id=\"{main_id}\" p:UUID=\"{:08x}-61cb-4c03-9d28-80fed5dfa1dc\" type=\"model\">\n   <components>\n{comps}   </components>\n  </object>",
+            main_id
         );
-        let tx = off.x + BED_CENTER[0];
-        let ty = off.y + BED_CENTER[1];
         let _ = writeln!(
             build,
             "  <item objectid=\"{main_id}\" p:UUID=\"{:08x}-b1ec-4553-aec9-835e5b724bb4\" transform=\"1 0 0 0 1 0 0 0 1 {} {} {}\" printable=\"1\"/>",
             main_id,
-            fmt_f(tx),
-            fmt_f(ty),
+            fmt_f(off.x + BED_CENTER[0]),
+            fmt_f(off.y + BED_CENTER[1]),
             fmt_f(off.z)
         );
         let name = xml_escape(&ob.name);
+        let fc: usize = ob.parts.iter().map(|p| p.1.tris.len()).sum();
         let _ = write!(
             settings,
-            "  <object id=\"{main_id}\">\n    <metadata key=\"name\" value=\"{name}\"/>\n    <metadata key=\"extruder\" value=\"{dom_ext}\"/>\n    <metadata face_count=\"{fc}\"/>\n    <part id=\"1\" subtype=\"normal_part\">\n      <metadata key=\"name\" value=\"{name}\"/>\n      <metadata key=\"matrix\" value=\"1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1\"/>\n      <metadata key=\"source_object_id\" value=\"{k}\"/>\n      <metadata key=\"source_volume_id\" value=\"0\"/>\n      <metadata key=\"extruder\" value=\"{dom_ext}\"/>\n      <mesh_stat face_count=\"{fc}\" edges_fixed=\"0\" degenerate_facets=\"0\" facets_removed=\"0\" facets_reversed=\"0\" backwards_edges=\"0\"/>\n    </part>\n  </object>\n",
-            fc = ob.mesh.tris.len()
+            "  <object id=\"{main_id}\">\n    <metadata key=\"name\" value=\"{name}\"/>\n    <metadata key=\"extruder\" value=\"{obj_dom_ext}\"/>\n    <metadata face_count=\"{fc}\"/>\n{part_cfg}  </object>\n"
         );
         let _ = write!(
             plate,
@@ -655,6 +715,7 @@ pub fn read_3mf<R: Read + Seek>(reader: R) -> Res<ImportResult> {
     let names: Vec<String> = z.file_names().map(|s| s.to_string()).collect();
     let mut filament_colors: Vec<[u8; 3]> = Vec::new();
     let mut obj_settings: HashMap<String, (String, Option<u32>)> = HashMap::new();
+    let mut part_ext: HashMap<String, u32> = HashMap::new();
     for n in &names {
         if n.ends_with(".model") {
             let mut s = String::new();
@@ -665,7 +726,9 @@ pub fn read_3mf<R: Read + Seek>(reader: R) -> Res<ImportResult> {
         if n.ends_with("model_settings.config") {
             let mut s = String::new();
             z.by_name(n).map_err(err)?.read_to_string(&mut s).map_err(err)?;
-            obj_settings = parse_model_settings(&s);
+            let (o, p) = parse_model_settings_full(&s);
+            obj_settings = o;
+            part_ext = p;
         }
         if n.ends_with("project_settings.config") {
             let mut s = String::new();
@@ -694,6 +757,7 @@ pub fn read_3mf<R: Read + Seek>(reader: R) -> Res<ImportResult> {
         inherited: Option<[u8; 3]>,
         out: &mut Vec<(Mesh, Vec<Option<[u8; 3]>>, Vec<Option<u32>>, Option<[u8; 3]>)>,
         depth: u32,
+        part_col: &dyn Fn(&str) -> Option<[u8; 3]>,
     ) {
         if depth > 16 {
             return;
@@ -705,7 +769,7 @@ pub fn read_3mf<R: Read + Seek>(reader: R) -> Res<ImportResult> {
             out.push((m.transformed(&xf), o.tri_color.clone(), o.tri_paint.clone(), col));
         }
         for (p, cid, t) in &o.components {
-            gather(files, p, cid, xf * *t, col, out, depth + 1);
+            gather(files, p, cid, xf * *t, part_col(cid).or(col), out, depth + 1, part_col);
         }
     }
     let root = &files[&root_key];
@@ -716,7 +780,8 @@ pub fn read_3mf<R: Read + Seek>(reader: R) -> Res<ImportResult> {
             .get(id)
             .and_then(|(_, e)| *e)
             .and_then(|e| filament_colors.get((e as usize).wrapping_sub(1)).copied());
-        gather(&files, &root_key, id, *xf, ext_color, &mut parts, 0);
+        let part_col = |cid: &str| part_ext.get(cid).and_then(|&e| filament_colors.get((e as usize).wrapping_sub(1)).copied());
+        gather(&files, &root_key, id, *xf, ext_color, &mut parts, 0, &part_col);
         let mut mesh = Mesh::new();
         for (mut m, tc, tp, oc) in parts {
             for t in 0..m.tris.len() {
@@ -746,7 +811,10 @@ pub fn read_3mf<R: Read + Seek>(reader: R) -> Res<ImportResult> {
 }
 
 /// object id -> (name, extruder) from Bambu's Metadata/model_settings.config
-fn parse_model_settings(xml: &str) -> HashMap<String, (String, Option<u32>)> {
+/// (object id -> (name, extruder), part/volume id -> extruder)
+fn parse_model_settings_full(xml: &str) -> (HashMap<String, (String, Option<u32>)>, HashMap<String, u32>) {
+    let mut parts: HashMap<String, u32> = HashMap::new();
+    let mut cur_part: Option<String> = None;
     use quick_xml::events::Event;
     let mut r = quick_xml::Reader::from_str(xml);
     let mut out = HashMap::new();
@@ -765,7 +833,19 @@ fn parse_model_settings(xml: &str) -> HashMap<String, (String, Option<u32>)> {
                         out.insert(id.clone(), (String::new(), None));
                         cur = Some(id);
                     }
-                    "part" => depth_in_part = true,
+                    "part" => {
+                        depth_in_part = true;
+                        cur_part = get("id");
+                    }
+                    "metadata" if depth_in_part => {
+                        if let (Some(pid), Some(k), Some(v)) = (&cur_part, get("key"), get("value")) {
+                            if k == "extruder" {
+                                if let Ok(e) = v.parse() {
+                                    parts.insert(pid.clone(), e);
+                                }
+                            }
+                        }
+                    }
                     "metadata" if !depth_in_part => {
                         if let (Some(id), Some(k), Some(v)) = (&cur, get("key"), get("value")) {
                             let ent = out.get_mut(id).unwrap();
@@ -791,7 +871,7 @@ fn parse_model_settings(xml: &str) -> HashMap<String, (String, Option<u32>)> {
             _ => {}
         }
     }
-    out
+    (out, parts)
 }
 
 pub fn import_file(path: &Path) -> Res<ImportResult> {

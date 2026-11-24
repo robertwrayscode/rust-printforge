@@ -40,6 +40,50 @@ pub struct CheckInput {
     pub overhang_deg: f64,
 }
 
+/// For each object, the object it rests on (if it doesn't sit on the plate itself but sits
+/// on top of / inside another one). Slicers drop every separate object onto the plate, so
+/// stacked parts must be exported together.
+pub fn resting_on(bounds: &[Aabb]) -> Vec<Option<usize>> {
+    (0..bounds.len())
+        .map(|i| {
+            let b = &bounds[i];
+            if b.min.z <= 0.01 {
+                return None;
+            }
+            (0..bounds.len())
+                .filter(|&j| j != i)
+                .filter(|&j| {
+                    let o = &bounds[j];
+                    o.min.z < b.min.z - 1e-6
+                        && o.max.z >= b.min.z - 0.05
+                        && o.min.x < b.max.x && b.min.x < o.max.x
+                        && o.min.y < b.max.y && b.min.y < o.max.y
+                })
+                .min_by(|&a, &c| bounds[a].min.z.partial_cmp(&bounds[c].min.z).unwrap())
+        })
+        .collect()
+}
+
+/// Group objects into stacks (union of resting relations). Returns a group id per object.
+pub fn stack_groups(bounds: &[Aabb]) -> Vec<usize> {
+    let rest = resting_on(bounds);
+    let mut g: Vec<usize> = (0..bounds.len()).collect();
+    fn find(g: &mut [usize], mut x: usize) -> usize {
+        while g[x] != x {
+            g[x] = g[g[x]];
+            x = g[x];
+        }
+        x
+    }
+    for (i, r) in rest.iter().enumerate() {
+        if let Some(j) = r {
+            let (a, b) = (find(&mut g, i), find(&mut g, *j));
+            g[a] = b;
+        }
+    }
+    (0..bounds.len()).map(|i| find(&mut g, i)).collect()
+}
+
 fn push(r: &mut Report, sev: Severity, obj: Option<u64>, title: &str, detail: String, tris: Vec<u32>) {
     r.issues.push(Issue { severity: sev, title: title.into(), detail, object: obj, tris });
 }
@@ -52,7 +96,22 @@ pub fn run(input: &CheckInput) -> Report {
         return r;
     }
 
-    let per: Vec<Report> = input.objects.par_iter().map(|(id, name, m)| check_object(*id, name, m, input)).collect();
+    let bounds: Vec<Aabb> = input.objects.iter().map(|o| o.2.bounds()).collect();
+    let rest = resting_on(&bounds);
+    // lowest point of each stack (so a part resting on another isn't "floating")
+    let groups = stack_groups(&bounds);
+    let stack_min: Vec<f64> = (0..bounds.len())
+        .map(|i| (0..bounds.len()).filter(|&j| groups[j] == groups[i]).map(|j| bounds[j].min.z).fold(f64::INFINITY, f64::min))
+        .collect();
+    let per: Vec<Report> = input
+        .objects
+        .par_iter()
+        .enumerate()
+        .map(|(i, (id, name, m))| {
+            let on = rest[i].map(|j| input.objects[j].1.clone());
+            check_object(*id, name, m, input, on.as_deref(), stack_min[i])
+        })
+        .collect();
     for x in per {
         r.issues.extend(x.issues);
         r.summary.extend(x.summary);
@@ -125,7 +184,7 @@ pub fn run(input: &CheckInput) -> Report {
     r
 }
 
-fn check_object(id: u64, name: &str, m: &Mesh, input: &CheckInput) -> Report {
+fn check_object(id: u64, name: &str, m: &Mesh, input: &CheckInput, resting_on: Option<&str>, stack_min: f64) -> Report {
     let mut r = Report::default();
     let p = &input.printer;
     let o = Some(id);
@@ -218,11 +277,20 @@ fn check_object(id: u64, name: &str, m: &Mesh, input: &CheckInput) -> Report {
     if b.min.z < -0.01 {
         push(&mut r, Severity::Warning, o, "Below the build plate",
             format!("'{name}' goes {:.2} mm under the plate; that part will be cut off. Use Drop to bed if that isn't intended.", -b.min.z), vec![]);
+    } else if let Some(base) = resting_on {
+        if stack_min > 0.01 {
+            push(&mut r, Severity::Error, o, "Stack is floating above the build plate",
+                format!("'{name}' sits on '{base}', but that stack starts {stack_min:.2} mm above the plate. Select the bottom part and use Drop to bed (D)."), vec![]);
+        } else {
+            push(&mut r, Severity::Info, o, "Stacked on another part",
+                format!("'{name}' sits on '{base}'. They'll be exported together as one object (each part keeps its colours). Group them if you want them merged into one solid."), vec![]);
+        }
     } else if b.min.z > 0.01 {
         push(&mut r, Severity::Error, o, "Floating above the build plate",
-            format!("'{name}' starts {:.2} mm above the plate. Use Drop to bed (D).", b.min.z), vec![]);
+            format!("'{name}' starts {:.2} mm above the plate with nothing under it. Use Drop to bed (D), or move it onto another part.", b.min.z), vec![]);
     }
     let minz = b.min.z;
+    let on_plate = resting_on.is_none();
     let mut contact = 0.0;
     for t in 0..n {
         let (nn, a) = m.tri_normal_area(t);
@@ -230,7 +298,8 @@ fn check_object(id: u64, name: &str, m: &Mesh, input: &CheckInput) -> Report {
             contact += a;
         }
     }
-    if contact < 1e-6 {
+    if !on_plate {
+    } else if contact < 1e-6 {
         push(&mut r, Severity::Warning, o, "No flat base",
             format!("'{name}' touches the plate only at a point or edge. Add a flat base, lay it flat on a face, or enable supports + brim."), vec![]);
     } else {

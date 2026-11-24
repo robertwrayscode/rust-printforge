@@ -2,6 +2,14 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.1.5 — 2026-11-24
+- **Fixed:** a part sitting on top of another part (e.g. a cone on a box) was reported as
+  "Floating above the build plate" and blocked export. It's now recognised as stacked.
+- Stacked parts are exported to Bambu Studio as **one object with several parts**, each keeping
+  its own filament and paint. (Separate objects would be dropped to the plate by Bambu Studio.)
+- A stack that genuinely floats above the plate is still reported as an error.
+- Importing a Bambu 3MF now keeps each part's own filament colour.
+
 ## 0.1.4 — 2026-11-24
 - **The paint brush now paints like a brush:** a round dab the size of the brush radius,
   and smooth strokes when you drag, instead of colouring whole triangles (which on a box
