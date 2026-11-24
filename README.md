@@ -9,13 +9,15 @@ export a Bambu Studio project that opens with its colours and filaments already 
 
 ## Download
 
+The version number is in the title bar, the status bar, and the download names; see CHANGELOG.md for what changed.
+
 Every push to `main` builds the apps in **GitHub Actions** (Actions tab → latest run →
 Artifacts). Tagging a version (for example `v0.1.0`) also attaches them to a Release.
 
 | Platform | File | Notes |
 |---|---|---|
-| Windows 10/11 (x64) | `PrintForge-windows-x64.zip` | Unzip and run `PrintForge.exe`. SmartScreen may warn because the app isn't signed: click **More info → Run anyway**. |
-| macOS 11+ (Apple Silicon and Intel) | `PrintForge-macos-universal.zip` | Unzip and drag `PrintForge.app` to Applications. It's ad-hoc signed, so the first time you open it, **right-click → Open**. If macOS still refuses, run `xattr -dr com.apple.quarantine /Applications/PrintForge.app` once in Terminal. |
+| Windows 10/11 (x64) | `PrintForge-<version>-windows-x64.zip` | Unzip and run `PrintForge.exe`. SmartScreen may warn because the app isn't signed: click **More info → Run anyway**. |
+| macOS 11+ (Apple Silicon and Intel) | `PrintForge-<version>-macos-universal.zip` | Unzip and drag `PrintForge.app` to Applications. It's ad-hoc signed, so the first time you open it, **right-click → Open**. If macOS still refuses, run `xattr -dr com.apple.quarantine /Applications/PrintForge.app` once in Terminal. |
 
 To build it yourself, install Rust (1.96 or newer) from <https://rustup.rs> and run:
 

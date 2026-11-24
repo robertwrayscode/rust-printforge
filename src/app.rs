@@ -103,7 +103,7 @@ struct Entry {
     key: u64,
     hole: bool,
     mesh: Mesh,
-    bvh: Arc<Bvh>,
+    bvh: Option<Arc<Bvh>>,
 }
 
 struct Hit {
@@ -135,6 +135,7 @@ pub struct App {
     gizmo: Gizmo,
     gizmo_kind: GizmoKind,
     gizmo_start: Option<Vec<(u64, DVec3, DVec3, DVec3)>>,
+    gizmo_grab: bool,
     snap: f64,
     renderer: SharedRenderer,
     entries: Vec<Entry>,
@@ -196,6 +197,7 @@ impl App {
             gizmo: Gizmo::default(),
             gizmo_kind: GizmoKind::Move,
             gizmo_start: None,
+            gizmo_grab: false,
             snap: 1.0,
             renderer: Arc::new(Mutex::new(Renderer::default())),
             entries: vec![],
@@ -284,6 +286,11 @@ impl App {
     }
 
     fn world_bounds(&mut self, id: u64) -> Aabb {
+        if !self.geometry_dirty {
+            if let Some(e) = self.entries.iter().find(|e| e.id == id) {
+                return e.mesh.bounds();
+            }
+        }
         match self.doc.find(id) {
             Some(o) => {
                 let o = o.clone();
@@ -780,9 +787,10 @@ impl App {
             o.mirror.hash(&mut h);
             let key = h.finish();
             let mesh = self.cache.world_mesh(&o);
+            // picking structure is rebuilt lazily (not every frame while dragging)
             let bvh = match old.remove(&o.id) {
                 Some(e) if e.key == key && e.mesh.tris.len() == mesh.tris.len() => e.bvh,
-                _ => Arc::new(Bvh::build(&mesh)),
+                _ => None,
             };
             self.entries.push(Entry { id: o.id, key, hole: o.hole, mesh, bvh });
         }
@@ -856,11 +864,12 @@ impl App {
         self.renderer.lock().unwrap().set_batches(vec![solid, lines, overlay, holes]);
     }
 
-    fn pick(&self, rect: Rect, pos: Pos2) -> Option<Hit> {
+    fn pick(&mut self, rect: Rect, pos: Pos2) -> Option<Hit> {
         let (o, d) = self.camera.ray(rect, pos);
         let mut best: Option<(f64, Hit)> = None;
-        for (i, e) in self.entries.iter().enumerate() {
-            if let Some((t, tri)) = e.bvh.raycast(&e.mesh, o, d, None) {
+        for (i, e) in self.entries.iter_mut().enumerate() {
+            let bvh = e.bvh.get_or_insert_with(|| Arc::new(Bvh::build(&e.mesh))).clone();
+            if let Some((t, tri)) = bvh.raycast(&e.mesh, o, d, None) {
                 // prefer solids over holes when both are hit at similar depth
                 let t_adj = if e.hole { t + 0.01 } else { t };
                 if best.as_ref().map(|b| t_adj < b.0).unwrap_or(true) {
@@ -1578,7 +1587,7 @@ impl App {
                 if self.gizmo_kind == GizmoKind::Scale { rot } else { DQuat::IDENTITY },
                 b.center(),
             );
-            if let Some((result, _)) = self.gizmo.interact(ui, &[t]) {
+            if let Some(result) = self.drive_gizmo(ui, &resp, rect, t) {
                 gizmo_active = true;
                 if self.gizmo_start.is_none() {
                     self.gizmo_start = Some(self.selected().iter().map(|o| (o.id, o.pos, o.rot, o.size)).collect());
@@ -1629,9 +1638,11 @@ impl App {
                 }
                 self.touch();
             }
-            if self.gizmo.is_focused() {
+            if self.gizmo_grab {
                 gizmo_active = true;
             }
+        } else {
+            self.gizmo_grab = false;
         }
         if !gizmo_active && !ui.input(|i| i.pointer.primary_down()) {
             self.gizmo_start = None;
@@ -1639,7 +1650,8 @@ impl App {
 
         // hover
         let pointer = resp.hover_pos();
-        self.hover = pointer.and_then(|p| self.pick(rect, p));
+        let dragging_obj = matches!(self.drag, Drag::Move { .. } | Drag::Orbit | Drag::Pan) || gizmo_active;
+        self.hover = if dragging_obj { None } else { pointer.and_then(|p| self.pick(rect, p)) };
 
         // drags
         let mods = ui.input(|i| i.modifiers);
@@ -1745,7 +1757,7 @@ impl App {
         }
 
         // clicks
-        if resp.clicked() {
+        if resp.clicked() && !gizmo_active {
             let hit = pointer.and_then(|p| self.pick(rect, p));
             match self.tool {
                 Tool::Select => {
@@ -1859,6 +1871,43 @@ impl App {
         if self.doc.objects.is_empty() {
             painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click a shape on the left to begin", egui::FontId::proportional(20.0), Color32::from_gray(110));
         }
+    }
+
+    /// Feed the gizmo our own pointer state. (The crate's `interact` puts an input widget
+    /// under the cursor every frame, which swallows every click in the viewport.)
+    fn drive_gizmo(&mut self, ui: &egui::Ui, resp: &egui::Response, rect: Rect, t: transform_gizmo_egui::math::Transform) -> Option<GizmoResult> {
+        let cursor = ui.input(|i| i.pointer.hover_pos()).unwrap_or_default();
+        let (pressed, down) = ui.input(|i| (i.pointer.button_pressed(egui::PointerButton::Primary), i.pointer.button_down(egui::PointerButton::Primary)));
+        let cfg = *self.gizmo.config();
+        self.gizmo.update_config(GizmoConfig { pixels_per_point: ui.ctx().pixels_per_point(), ..cfg });
+        let hovered = resp.hovered() || resp.dragged();
+        let result = self.gizmo.update(
+            GizmoInteraction { cursor_pos: (cursor.x, cursor.y), hovered, drag_started: pressed && hovered, dragging: down },
+            &[t],
+        );
+        if pressed {
+            // grabbed only if the press landed on a gizmo handle
+            self.gizmo_grab = hovered && self.gizmo.is_focused();
+        }
+        if !down {
+            self.gizmo_grab = false;
+        }
+        let dd = self.gizmo.draw();
+        ui.painter_at(rect).add(egui::Mesh {
+            indices: dd.indices,
+            vertices: dd
+                .vertices
+                .into_iter()
+                .zip(dd.colors)
+                .map(|(pos, [r, g, b, a])| egui::epaint::Vertex {
+                    pos: pos.into(),
+                    uv: Pos2::default(),
+                    color: egui::Rgba::from_rgba_premultiplied(r, g, b, a).into(),
+                })
+                .collect(),
+            ..Default::default()
+        });
+        result.map(|r| r.0)
     }
 
     fn duplicate_in_place(&mut self) {
@@ -2127,7 +2176,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{} · {}", self.doc.printer.name, self.file.as_ref().map(|f| f.display().to_string()).unwrap_or("unsaved".into()))).weak());
+                    ui.label(RichText::new(format!("PrintForge v{} · {} · {}", env!("CARGO_PKG_VERSION"), self.doc.printer.name, self.file.as_ref().map(|f| f.display().to_string()).unwrap_or("unsaved".into()))).weak());
                 });
             });
         });

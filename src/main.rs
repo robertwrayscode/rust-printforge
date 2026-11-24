@@ -121,7 +121,7 @@ fn main() {
             for msaa in [4u16, 0] {
                 let opts = eframe::NativeOptions {
                     viewport: eframe::egui::ViewportBuilder::default()
-                        .with_title("PrintForge — 3D design for Bambu Lab H2C")
+                        .with_title(format!("PrintForge v{} — 3D design for Bambu Lab H2C", env!("CARGO_PKG_VERSION")))
                         .with_inner_size([1400.0, 860.0])
                         .with_min_inner_size([900.0, 600.0]),
                     depth_buffer: 24,
