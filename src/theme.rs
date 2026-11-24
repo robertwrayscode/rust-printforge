@@ -100,6 +100,9 @@ pub fn save(dark: bool) {
 
 pub fn apply(ctx: &egui::Context, is_dark: bool) {
     DARK.store(is_dark, Ordering::Relaxed);
+    // Use our theme no matter what the operating system's light/dark setting is.
+    let theme = if is_dark { egui::Theme::Dark } else { egui::Theme::Light };
+    ctx.set_theme(theme);
     let r4 = CornerRadius::same(4);
     let mut v = if is_dark { Visuals::dark() } else { Visuals::light() };
     if is_dark {
@@ -134,7 +137,7 @@ pub fn apply(ctx: &egui::Context, is_dark: bool) {
     }
     v.window_corner_radius = CornerRadius::same(8);
     v.menu_corner_radius = CornerRadius::same(6);
-    ctx.set_visuals(v);
+    ctx.set_visuals_of(theme, v);
     ctx.all_styles_mut(|s| {
         s.spacing.item_spacing = egui::vec2(6.0, 5.0);
         s.spacing.button_padding = egui::vec2(8.0, 3.0);

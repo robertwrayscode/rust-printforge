@@ -2,6 +2,11 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.1.10 — 2026-11-24
+- **Fixed:** on Windows (and Macs) set to light mode, the menus and side panels stayed light
+  while the rest of the app was dark. RoboForge now uses the theme chosen under
+  View ▸ Dark theme regardless of the operating system's light/dark setting.
+
 ## 0.1.9 — 2026-11-24
 - **New name: RoboForge** (was PrintForge). Downloads are now `RoboForge-<version>-…`.
   Existing `.pforge` project files still open.
