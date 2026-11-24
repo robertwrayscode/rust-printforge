@@ -783,3 +783,97 @@ mod refine_tests {
         assert!(r.tris.len() < 4000, "{}", r.tris.len());
     }
 }
+
+impl Mesh {
+    /// Connected flat area around `start`: neighbours within `angle_deg` of the start
+    /// face's normal and lying in (nearly) the same plane.
+    pub fn flat_region(&self, start: usize, angle_deg: f64) -> Vec<u32> {
+        let nb = self.tri_neighbors();
+        let (n0, _) = self.tri_normal_area(start);
+        let p0 = self.tri_points(start)[0];
+        let lim = angle_deg.to_radians().cos();
+        let mut seen = vec![false; self.tris.len()];
+        let mut out = vec![start as u32];
+        seen[start] = true;
+        let mut stack = vec![start];
+        while let Some(t) = stack.pop() {
+            for &x in &nb[t] {
+                if x == u32::MAX || seen[x as usize] {
+                    continue;
+                }
+                let (nx, _) = self.tri_normal_area(x as usize);
+                let off = self.tri_centroid(x as usize) - p0;
+                if nx.dot(n0) >= lim && off.dot(n0).abs() < 1e-3 * (1.0 + off.length()) {
+                    seen[x as usize] = true;
+                    out.push(x);
+                    stack.push(x as usize);
+                }
+            }
+        }
+        out
+    }
+
+    /// Closed prism made by sweeping the given flat region along `n` from offset `a` to `b`.
+    pub fn region_prism(&self, region: &[u32], n: DVec3, a: f64, b: f64, color: u8) -> Mesh {
+        let (lo, hi) = (a.min(b), a.max(b));
+        let mut m = Mesh::new();
+        let mut map: HashMap<u32, (u32, u32)> = HashMap::new();
+        let mut get = |v: u32, m: &mut Mesh| -> (u32, u32) {
+            *map.entry(v).or_insert_with(|| {
+                let p = self.verts[v as usize];
+                (m.add_vert(p + n * lo), m.add_vert(p + n * hi))
+            })
+        };
+        let mut directed = std::collections::HashSet::new();
+        for &t in region {
+            let tri = self.tris[t as usize];
+            for k in 0..3 {
+                directed.insert((tri[k], tri[(k + 1) % 3]));
+            }
+        }
+        for &t in region {
+            let [x, y, z] = self.tris[t as usize];
+            let (xl, xh) = get(x, &mut m);
+            let (yl, yh) = get(y, &mut m);
+            let (zl, zh) = get(z, &mut m);
+            m.add_tri(xh, yh, zh);
+            m.add_tri(xl, zl, yl);
+        }
+        for &(p, q) in &directed {
+            if directed.contains(&(q, p)) {
+                continue; // interior edge
+            }
+            let (pl, ph) = get(p, &mut m);
+            let (ql, qh) = get(q, &mut m);
+            m.add_quad(pl, ql, qh, ph);
+        }
+        m.set_color(color);
+        m.weld(1e-9);
+        if m.volume() < 0.0 {
+            m.flip();
+        }
+        m
+    }
+}
+
+#[cfg(test)]
+mod pushpull_tests {
+    use super::*;
+    #[test]
+    fn extrude_box_face() {
+        let mut m = crate::shapes::Shape::Box { radius: 0.0, steps: 1 }.generate(DVec3::splat(20.0));
+        m.set_color(0);
+        // a triangle on the +X face
+        let start = (0..m.tris.len()).find(|&t| m.tri_normal_area(t).0.x > 0.99).unwrap();
+        let region = m.flat_region(start, 1.0);
+        assert_eq!(region.len(), 2);
+        let prism = m.region_prism(&region, DVec3::X, -0.01, 10.0, 0);
+        assert!((prism.volume() - 20.0 * 20.0 * 10.01).abs() < 1e-6, "{}", prism.volume());
+        let r = crate::csg::combine(&[m.clone(), prism], &[]);
+        assert!((r.mesh.volume() - 20.0 * 20.0 * 30.0).abs() < 1e-3, "{}", r.mesh.volume());
+        // push in
+        let cut = m.region_prism(&region, DVec3::X, -5.0, 0.01, 0);
+        let r2 = crate::csg::combine(&[m], &[cut]);
+        assert!((r2.mesh.volume() - 20.0 * 20.0 * 15.0).abs() < 1e-3, "{}", r2.mesh.volume());
+    }
+}

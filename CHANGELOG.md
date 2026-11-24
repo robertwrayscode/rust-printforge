@@ -2,6 +2,14 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.1.8 — 2026-11-24
+- **Side handles (Tinkercad-style):** a selected part shows small white squares on its sides
+  and top. Drag one and only that side moves — the opposite side stays put. The new size
+  shows while dragging and snaps to the grid (hold Shift for free sizing).
+- **Push/Pull tool:** click any flat face and drag it outward to extrude or inward to cut,
+  with a live green/red preview and distance readout; or type an exact distance and press
+  Apply. Works on any part, including imported and painted ones (the part becomes a mesh).
+
 ## 0.1.7 — 2026-11-24
 - **Shape tiles:** the Shapes panel shows a small 3D picture of each shape (drawn from the
   real shape) instead of text buttons. Click a tile to add it, or drag it straight into the

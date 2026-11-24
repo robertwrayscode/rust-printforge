@@ -81,6 +81,7 @@ pub enum Tool {
     Measure,
     LayFlat,
     SnapFaces,
+    PushPull,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,43 @@ struct Entry {
     hole: bool,
     mesh: Mesh,
     bvh: Option<Arc<Bvh>>,
+}
+
+#[derive(Clone)]
+struct ResizeDrag {
+    id: u64,
+    axis: usize,
+    sign: f64,
+    start: Object,
+    anchor: DVec3,
+    origin: DVec3,
+    dir: DVec3,
+    s0: f64,
+}
+
+#[derive(Clone)]
+struct PushPull {
+    id: u64,
+    region: Vec<u32>,
+    n: DVec3,
+    origin: DVec3,
+    dist: f64,
+    dragging: bool,
+    s0: f64,
+}
+
+fn mods_shift(ui: &egui::Ui) -> bool {
+    ui.input(|i| i.modifiers.shift)
+}
+
+/// Parameter along the line `o + s*dir` closest to the ray `ro + t*rd`.
+fn line_param(o: DVec3, dir: DVec3, ro: DVec3, rd: DVec3) -> f64 {
+    let w0 = o - ro;
+    let b = dir.dot(rd);
+    let d = dir.dot(w0);
+    let e = rd.dot(w0);
+    let den = 1.0 - b * b;
+    if den.abs() < 1e-9 { 0.0 } else { (b * e - d) / den }
 }
 
 struct Hit {
@@ -171,6 +209,8 @@ pub struct App {
     export_confirm: Option<(ExportKind, PathBuf)>,
     // misc
     file: Option<PathBuf>,
+    resize: Option<ResizeDrag>,
+    pp: Option<PushPull>,
     thumbs: Vec<egui::TextureHandle>,
     edits: u64,
     saved_edits: u64,
@@ -239,6 +279,8 @@ impl App {
             pending_export: None,
             export_confirm: None,
             file,
+            resize: None,
+            pp: None,
             thumbs: vec![],
             edits: 0,
             saved_edits: 0,
@@ -900,6 +942,25 @@ impl App {
                 }
             }
         }
+        // push/pull: highlight face and preview the extrusion
+        if let Some(pp) = &self.pp {
+            if let Some(e) = self.entries.iter().find(|e| e.id == pp.id) {
+                for &t in &pp.region {
+                    if (t as usize) < e.mesh.tris.len() {
+                        let [a, b, c] = e.mesh.tri_points(t as usize);
+                        overlay.tri(a.as_vec3(), b.as_vec3(), c.as_vec3(), [0.95, 0.35, 0.75, 1.0]);
+                    }
+                }
+                if pp.dist.abs() > 1e-6 {
+                    let prism = e.mesh.region_prism(&pp.region, pp.n, 0.0, pp.dist, 0);
+                    for t in 0..prism.tris.len() {
+                        let [a, b, c] = prism.tri_points(t);
+                        let col = if pp.dist > 0.0 { [0.2, 0.75, 0.35, 0.45] } else { [0.9, 0.2, 0.2, 0.45] };
+                        holes.tri(a.as_vec3(), b.as_vec3(), c.as_vec3(), col);
+                    }
+                }
+            }
+        }
         // bed
         let p = &self.doc.printer;
         let (hx, hy) = (330.0f32 / 2.0, 320.0f32 / 2.0);
@@ -1149,11 +1210,14 @@ impl App {
             ui.selectable_value(&mut tool, Tool::Fill, "Fill");
             ui.selectable_value(&mut tool, Tool::LayFlat, "Lay flat");
             ui.selectable_value(&mut tool, Tool::SnapFaces, "Snap faces");
+            ui.selectable_value(&mut tool, Tool::PushPull, "Push/Pull");
             ui.selectable_value(&mut tool, Tool::Measure, "Measure");
             if tool != self.tool {
                 self.tool = tool;
                 self.measure.clear();
                 self.snap_from = None;
+                self.pp = None;
+                self.geometry_dirty = true;
             }
             ui.separator();
             if self.tool == Tool::Select {
@@ -1342,6 +1406,37 @@ impl App {
                     if ui.button("Clear").clicked() {
                         self.measure.clear();
                     }
+                }
+                Tool::PushPull => {
+                    ui.heading("Push / Pull a face");
+                    ui.label("Click a flat face, then drag it outward to extrude or inward to cut. Or type an exact distance below.");
+                    let mut apply = None;
+                    if let Some(pp) = &mut self.pp {
+                        ui.horizontal(|ui| {
+                            ui.label("Distance");
+                            ui.add(egui::DragValue::new(&mut pp.dist).speed(0.1).suffix(" mm"));
+                        });
+                        ui.label(RichText::new("Positive = extrude out, negative = push in.").small().weak());
+                        ui.horizontal(|ui| {
+                            if ui.button(RichText::new("Apply").strong()).clicked() {
+                                apply = Some(pp.dist);
+                            }
+                            if ui.button("Cancel").clicked() {
+                                apply = Some(f64::NAN);
+                            }
+                        });
+                    } else {
+                        ui.label(RichText::new("No face selected.").weak());
+                    }
+                    match apply {
+                        Some(d) if d.is_nan() => {
+                            self.pp = None;
+                            self.rebuild_batches();
+                        }
+                        Some(d) => self.apply_pushpull(d),
+                        None => {}
+                    }
+                    ui.label(RichText::new("The part becomes a mesh afterwards (size/position still editable).").small().weak());
                 }
                 Tool::SnapFaces => {
                     ui.heading("Snap faces together");
@@ -1723,9 +1818,99 @@ impl App {
         ui.painter().add(cb);
 
 
+        // one-sided resize handles (Tinkercad-style)
+        let mut handle_active = self.resize.is_some();
+        let (p_pressed, p_down, p_pos) = ui.input(|i| (i.pointer.button_pressed(egui::PointerButton::Primary), i.pointer.button_down(egui::PointerButton::Primary), i.pointer.hover_pos()));
+        let handles = self.resize_handles(rect);
+        if p_pressed && self.tool == Tool::Select && resp.hovered() {
+            if let Some(pp) = p_pos {
+                if let Some(h) = handles.iter().find(|h| h.2.distance(pp) < 10.0) {
+                    let o = self.doc.find(self.selection[0]).cloned().unwrap();
+                    let (ro, rd) = self.camera.ray(rect, pp);
+                    let s0 = line_param(h.3, h.4, ro, rd);
+                    // the opposite face stays put
+                    let anchor = self.face_world(&o, h.0, -h.1);
+                    self.resize = Some(ResizeDrag { id: o.id, axis: h.0, sign: h.1, start: o, anchor, origin: h.3, dir: h.4, s0 });
+                    handle_active = true;
+                }
+            }
+        }
+        if let Some(rd) = self.resize.clone() {
+            handle_active = true;
+            if !p_down {
+                self.resize = None;
+            } else if let Some(pp) = p_pos {
+                let (ro, rdir) = self.camera.ray(rect, pp);
+                let s = line_param(rd.origin, rd.dir, ro, rdir);
+                let mut len = rd.start.size[rd.axis] + (s - rd.s0);
+                if self.snap > 0.0 && !mods_shift(ui) {
+                    len = (len / self.snap).round() * self.snap;
+                }
+                let len = len.max(0.1);
+                let mut o = rd.start.clone();
+                o.size[rd.axis] = len;
+                o.pos = DVec3::ZERO;
+                let at_zero = self.face_world(&o, rd.axis, -rd.sign);
+                o.pos = rd.anchor - at_zero;
+                if let Some(slot) = self.doc.find_mut(rd.id) {
+                    if slot.size != o.size || slot.pos != o.pos {
+                        *slot = o;
+                        self.touch();
+                    }
+                }
+            }
+        }
+
+        // push / pull
+        let mut pp_active = false;
+        if self.tool == Tool::PushPull {
+            if p_pressed && resp.hovered() {
+                if let Some(pp) = p_pos {
+                    if let Some(h) = self.pick(rect, pp) {
+                        let e = &self.entries[h.entry];
+                        if !self.doc.find(e.id).map(|o| o.locked).unwrap_or(true) {
+                            let region = e.mesh.flat_region(h.tri as usize, 1.0);
+                            let (n, _) = e.mesh.tri_normal_area(h.tri as usize);
+                            let (ro, rd) = self.camera.ray(rect, pp);
+                            let s0 = line_param(h.point, n, ro, rd);
+                            self.pp = Some(PushPull { id: e.id, region, n, origin: h.point, dist: 0.0, dragging: true, s0 });
+                            self.selection = vec![e.id];
+                            self.rebuild_batches();
+                        }
+                    }
+                }
+            }
+            if let Some(mut pp) = self.pp.clone() {
+                if pp.dragging {
+                    pp_active = true;
+                    if p_down {
+                        if let Some(p) = p_pos {
+                            let (ro, rd) = self.camera.ray(rect, p);
+                            let mut d = line_param(pp.origin, pp.n, ro, rd) - pp.s0;
+                            if self.snap > 0.0 && !mods_shift(ui) {
+                                d = (d / self.snap).round() * self.snap;
+                            }
+                            if (d - pp.dist).abs() > 1e-9 {
+                                pp.dist = d;
+                                self.pp = Some(pp.clone());
+                                self.rebuild_batches();
+                            }
+                        }
+                    } else {
+                        pp.dragging = false;
+                        let d = pp.dist;
+                        self.pp = Some(pp);
+                        if d.abs() > 1e-6 {
+                            self.apply_pushpull(d);
+                        }
+                    }
+                }
+            }
+        }
+
         // gizmo
-        let mut gizmo_active = false;
-        if self.tool == Tool::Select && self.gizmo_kind != GizmoKind::Off && !self.selection.is_empty() && !self.selected().iter().any(|o| o.locked) {
+        let mut gizmo_active = handle_active || pp_active;
+        if !handle_active && !pp_active && self.tool == Tool::Select && self.gizmo_kind != GizmoKind::Off && !self.selection.is_empty() && !self.selected().iter().any(|o| o.locked) {
             let b = self.selection_bounds();
             let single = if self.selection.len() == 1 { self.doc.find(self.selection[0]).cloned() } else { None };
             let rot = single.as_ref().map(|o| o.rotation()).unwrap_or(DQuat::IDENTITY);
@@ -1993,6 +2178,7 @@ impl App {
                         self.snap_face_click(&h);
                     }
                 }
+                Tool::PushPull => {}
             }
         }
 
@@ -2062,6 +2248,27 @@ impl App {
                 }
             }
         }
+        if self.tool == Tool::Select {
+            let hp = ui.input(|i| i.pointer.hover_pos());
+            for h in self.resize_handles(rect) {
+                let hot = hp.map(|p| p.distance(h.2) < 10.0).unwrap_or(false) || self.resize.as_ref().map(|r| r.axis == h.0 && r.sign == h.1).unwrap_or(false);
+                let r = Rect::from_center_size(h.2, Vec2::splat(if hot { 12.0 } else { 9.0 }));
+                painter.rect_filled(r, 2.0, if hot { Color32::from_rgb(40, 110, 230) } else { Color32::WHITE });
+                painter.rect_stroke(r, 2.0, Stroke::new(1.5, Color32::from_rgb(40, 110, 230)), egui::StrokeKind::Middle);
+            }
+            if let Some(rd) = &self.resize {
+                if let (Some(o), Some(p)) = (self.doc.find(rd.id), ui.input(|i| i.pointer.hover_pos())) {
+                    painter.text(p + Vec2::new(14.0, -14.0), egui::Align2::LEFT_BOTTOM, format!("{} {:.2} mm", ["W", "D", "H"][rd.axis], o.size[rd.axis]), egui::FontId::proportional(15.0), Color32::from_rgb(20, 70, 160));
+                }
+            }
+        }
+        if let (Tool::PushPull, Some(pp)) = (self.tool, &self.pp) {
+            if let Some(q) = self.camera.project(rect, pp.origin + pp.n * pp.dist) {
+                let q0 = self.camera.project(rect, pp.origin).unwrap_or(q);
+                painter.line_segment([q0, q], Stroke::new(2.0, Color32::from_rgb(230, 40, 160)));
+                painter.text(q + Vec2::new(12.0, -12.0), egui::Align2::LEFT_BOTTOM, format!("{:+.2} mm", pp.dist), egui::FontId::proportional(15.0), Color32::from_rgb(160, 20, 110));
+            }
+        }
         for (a, b) in &self.guides {
             if let (Some(pa), Some(pb)) = (self.camera.project(rect, *a), self.camera.project(rect, *b)) {
                 painter.line_segment([pa, pb], Stroke::new(1.5, Color32::from_rgb(230, 40, 160)));
@@ -2094,6 +2301,73 @@ impl App {
         if self.doc.objects.is_empty() {
             painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click a shape on the left to begin", egui::FontId::proportional(20.0), Color32::from_gray(110));
         }
+    }
+
+    /// World position of the centre of an object's local box face (axis, ±1).
+    fn face_world(&self, o: &Object, axis: usize, sign: f64) -> DVec3 {
+        let mut p = DVec3::new(0.0, 0.0, o.size.z * 0.5);
+        p[axis] += sign * o.size[axis] * 0.5;
+        o.transform().transform_point3(p)
+    }
+
+    /// Side handles of the single selected object: (axis, sign, screen pos, world pos, world dir).
+    fn resize_handles(&self, rect: Rect) -> Vec<(usize, f64, Pos2, DVec3, DVec3)> {
+        if self.selection.len() != 1 || self.gizmo_kind == GizmoKind::Rotate {
+            return vec![];
+        }
+        let Some(o) = self.doc.find(self.selection[0]) else { return vec![] };
+        if o.locked {
+            return vec![];
+        }
+        let mut out = vec![];
+        for (axis, sign) in [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0)] {
+            let w = self.face_world(o, axis, sign);
+            let mut step = DVec3::new(0.0, 0.0, o.size.z * 0.5);
+            step[axis] += sign * (o.size[axis] * 0.5 + 1.0);
+            let dir = (o.transform().transform_point3(step) - w).normalize_or_zero();
+            if let Some(sp) = self.camera.project(rect, w) {
+                out.push((axis, sign, sp, w, dir));
+            }
+        }
+        out
+    }
+
+    fn apply_pushpull(&mut self, dist: f64) {
+        let Some(pp) = self.pp.clone() else { return };
+        let Some(e) = self.entries.iter().find(|e| e.id == pp.id) else { return };
+        let Some(o) = self.doc.find(pp.id).cloned() else { return };
+        let mesh = e.mesh.clone();
+        let color = {
+            let mut c = std::collections::HashMap::new();
+            for &t in &pp.region {
+                *c.entry(mesh.colors[t as usize]).or_insert(0usize) += 1;
+            }
+            c.into_iter().max_by_key(|x| x.1).map(|x| x.0).unwrap_or(o.color)
+        };
+        let eps = 0.01;
+        let r = if dist > 0.0 {
+            let prism = mesh.region_prism(&pp.region, pp.n, -eps, dist, color);
+            crate::csg::combine(&[mesh, prism], &[])
+        } else {
+            let prism = mesh.region_prism(&pp.region, pp.n, dist, eps, color);
+            crate::csg::combine(&[mesh], &[prism])
+        };
+        if !r.warnings.is_empty() || r.mesh.tris.is_empty() {
+            self.status = format!("Push/Pull couldn't be applied: {}", r.warnings.join("; "));
+            return;
+        }
+        let (nm, size, off) = normalize_mesh(r.mesh);
+        if let Some(slot) = self.doc.find_mut(pp.id) {
+            slot.kind = Kind::Mesh(Arc::new(nm));
+            slot.size = size;
+            slot.pos = off;
+            slot.rot = DVec3::ZERO;
+            slot.mirror = [false; 3];
+            slot.paint = None;
+        }
+        self.pp = None;
+        self.status = format!("{} the face by {:.2} mm.", if dist > 0.0 { "Extruded" } else { "Pushed in" }, dist.abs());
+        self.touch();
     }
 
     fn begin_move(&mut self, hit: DVec3) -> Drag {
@@ -2503,6 +2777,7 @@ impl App {
                 ui.label("Mouse: left-drag an object to move it on the plate · left-drag empty space or right-drag to orbit · middle-drag or Shift+right-drag to pan · scroll/pinch to zoom · Shift+drag on empty space to box-select · Alt+drag to drag out a copy.");
                 ui.label("Keys (Ctrl on Windows, Cmd on Mac): Z undo · Shift+Z / Y redo · C/V copy/paste · D duplicate · G group · Shift+G ungroup · A select all · S save.");
                 ui.label("Plain keys: H make hole · S make solid · D drop to bed · F fit view · P paint · B fill · 1/2/3 move/rotate/scale gizmo · arrows nudge (Shift ×10, Ctrl/Cmd+↑↓ raise/lower) · Delete removes · Esc back to select.");
+                ui.label("Side handles: drag a white square on a selected part to stretch just that side. Push/Pull tool: click a flat face and drag it out or in.");
                 ui.label("Dragged parts ride on top of other parts and snap to their edges and centres (pink guides). Snap faces tool: click a face to move, then the face to attach to. Drag shapes from the panel onto the plate or a part. Hold Shift while dragging for free movement with no snapping.");
             });
             self.show_help = open;
