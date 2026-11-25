@@ -57,7 +57,7 @@ pub fn load_picture(path: &std::path::Path) -> Result<Picture, String> {
 }
 
 impl Picture {
-    fn sample(&self, u: f64, v: f64) -> [f64; 4] {
+    pub fn sample(&self, u: f64, v: f64) -> [f64; 4] {
         // bilinear sample, u,v in [0,1], v=0 top of the image
         let x = (u * (self.w - 1) as f64).clamp(0.0, (self.w - 1) as f64);
         let y = (v * (self.h - 1) as f64).clamp(0.0, (self.h - 1) as f64);
@@ -135,7 +135,7 @@ pub fn heightfield(nx: usize, ny: usize, w: f64, d: f64, height: &dyn Fn(usize, 
     m
 }
 
-fn nearest_filament(rgb: [f64; 3], fils: &[Filament], allowed: &[bool]) -> u8 {
+pub fn nearest_filament(rgb: [f64; 3], fils: &[Filament], allowed: &[bool]) -> u8 {
     let mut best = (f64::INFINITY, 0usize);
     for (i, f) in fils.iter().enumerate() {
         if !allowed.get(i).copied().unwrap_or(true) {

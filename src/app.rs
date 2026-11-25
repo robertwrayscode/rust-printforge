@@ -82,6 +82,7 @@ pub enum Tool {
     LayFlat,
     SnapFaces,
     PushPull,
+    Decal,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,6 +159,9 @@ struct ImgDialog {
     pic: Arc<crate::imaging::Picture>,
     tex: Option<egui::TextureHandle>,
     opts: crate::imaging::ImageOptions,
+    decal: bool,
+    decal_width: f64,
+    skip_bg: bool,
 }
 
 struct SvgDialog {
@@ -226,6 +230,8 @@ pub struct App {
     file: Option<PathBuf>,
     opened_at_start: bool,
     img_dialog: Option<ImgDialog>,
+    decal: Option<crate::decal::Decal>,
+    decal_tex: Option<egui::TextureHandle>,
     svg_dialog: Option<SvgDialog>,
     last_autosave: std::time::Instant,
     recover_offer: bool,
@@ -303,6 +309,8 @@ impl App {
             file,
             opened_at_start: false,
             img_dialog: None,
+            decal: None,
+            decal_tex: None,
             svg_dialog: None,
             last_autosave: std::time::Instant::now(),
             recover_offer: crate::settings::autosave_path().map(|p| p.exists()).unwrap_or(false),
@@ -1014,7 +1022,10 @@ impl App {
             Ok(pic) => {
                 let mut opts = crate::imaging::ImageOptions::default();
                 opts.use_filaments = vec![true; self.doc.filaments.len()];
-                self.img_dialog = Some(ImgDialog { path, pic: Arc::new(pic), tex: None, opts });
+                // a part is selected: most likely they want the picture ON it
+                let decal = !self.selection.is_empty();
+                let has_alpha = pic.rgba.chunks(4).any(|p| p[3] < 250);
+                self.img_dialog = Some(ImgDialog { path, pic: Arc::new(pic), tex: None, opts, decal, decal_width: 40.0, skip_bg: !has_alpha });
             }
             Err(e) => self.status = format!("Couldn't read that picture: {e}"),
         }
@@ -1056,6 +1067,7 @@ impl App {
         use crate::imaging::ImageMode;
         let mut close_img = false;
         let mut create_img = None;
+        let mut place_decal = None;
         if let Some(d) = &mut self.img_dialog {
             if d.tex.is_none() {
                 let img = egui::ColorImage::from_rgba_unmultiplied([d.pic.w as usize, d.pic.h as usize], &d.pic.rgba);
@@ -1069,11 +1081,45 @@ impl App {
                     let h = w * d.pic.h as f32 / d.pic.w as f32;
                     ui.add(egui::Image::new(t).fit_to_exact_size(Vec2::new(w, h.min(260.0))));
                 }
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut d.opts.mode, ImageMode::Lithophane, "Lithophane");
-                    ui.selectable_value(&mut d.opts.mode, ImageMode::Relief, "Raised relief");
-                    ui.selectable_value(&mut d.opts.mode, ImageMode::ColourPlate, "Colour plate");
+                ui.horizontal_wrapped(|ui| {
+                    for (m, n) in [(ImageMode::Lithophane, "Lithophane"), (ImageMode::Relief, "Raised relief"), (ImageMode::ColourPlate, "Colour plate")] {
+                        if ui.selectable_label(!d.decal && d.opts.mode == m, n).clicked() {
+                            d.opts.mode = m;
+                            d.decal = false;
+                        }
+                    }
+                    if ui.selectable_label(d.decal, "On a part's surface").clicked() {
+                        d.decal = true;
+                    }
                 });
+                if d.decal {
+                    ui.label(RichText::new("Paints the picture onto a part you click, using your filament colours. It prints in colour with no extra setup.").small().weak());
+                    ui.add(egui::Slider::new(&mut d.decal_width, 5.0..=250.0).text("width (mm)"));
+                    ui.checkbox(&mut d.skip_bg, "Leave the background unpainted").on_hover_text("Skips the colour found in the picture's corners (e.g. the white around a logo). Transparent areas are always skipped.");
+                    ui.label("Use these filaments:");
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, f) in self.doc.filaments.iter().enumerate() {
+                            if d.opts.use_filaments.len() <= i {
+                                d.opts.use_filaments.push(true);
+                            }
+                            let on = &mut d.opts.use_filaments[i];
+                            let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                            ui.painter().rect_filled(r, 3.0, c32(f.color));
+                            ui.painter().rect_stroke(r, 3.0, Stroke::new(if *on { 2.5 } else { 1.0 }, if *on { crate::theme::accent() } else { Color32::from_gray(90) }), egui::StrokeKind::Outside);
+                            if !*on {
+                                ui.painter().line_segment([r.left_top(), r.right_bottom()], Stroke::new(2.0, Color32::from_gray(160)));
+                            }
+                            if resp.on_hover_text(&f.name).clicked() {
+                                *on = !*on;
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    if ui.button(RichText::new("Place on a part…").strong()).clicked() {
+                        place_decal = Some((d.pic.clone(), d.tex.clone(), d.decal_width, d.skip_bg, d.opts.use_filaments.clone()));
+                    }
+                    return;
+                }
                 let hint = match d.opts.mode {
                     ImageMode::Lithophane => "Thin where the photo is bright, thick where dark. Print in white and hold it up to a light. Tip: print it standing up for best detail.",
                     ImageMode::Relief => "A plate with the bright parts raised (tick Invert to raise the dark parts).",
@@ -1125,6 +1171,14 @@ impl App {
             if !open {
                 close_img = true;
             }
+        }
+        if let Some((pic, tex, width, skip_background, allowed)) = place_decal {
+            self.decal = Some(crate::decal::Decal { pic, width, rotation: 0.0, allowed, skip_background, from_view: false });
+            self.decal_tex = tex;
+            self.tool = Tool::Decal;
+            self.geometry_dirty = true;
+            self.status = "Click on a part to put the picture there. Esc to cancel.".into();
+            close_img = true;
         }
         if let Some((pic, opts)) = create_img {
             let mesh = crate::imaging::picture_to_mesh(&pic, &opts, &self.doc.filaments);
@@ -1438,6 +1492,87 @@ impl App {
 
     // ---------------------------------------------------------- painting
 
+    /// Where a decal would go for this hover/click: (object id, local frame, world frame).
+    fn decal_frame(&self, h: &Hit) -> Option<(u64, crate::decal::Frame, crate::decal::Frame)> {
+        let d = self.decal.as_ref()?;
+        let e = self.entries.get(h.entry)?;
+        if e.hole || (h.tri as usize) >= e.mesh.tris.len() {
+            return None;
+        }
+        let o = self.doc.find(e.id)?;
+        let iv = self.camera.view().inverse();
+        let (back, cam_up) = (iv.transform_vector3(DVec3::Z).normalize(), iv.transform_vector3(DVec3::Y).normalize());
+        let n = if d.from_view {
+            back
+        } else {
+            let (n, _) = e.mesh.tri_normal_area(h.tri as usize);
+            if n.dot(back) < 0.0 { back } else { n }
+        };
+        let wf = d.frame(h.point, n, DVec3::Z, cam_up);
+        let inv = o.transform().inverse();
+        let lf = crate::decal::Frame {
+            centre: inv.transform_point3(wf.centre),
+            n: inv.transform_vector3(wf.n).normalize(),
+            right: inv.transform_vector3(wf.right).normalize(),
+            up: inv.transform_vector3(wf.up).normalize(),
+        };
+        Some((o.id, lf, wf))
+    }
+
+    fn apply_decal(&mut self, h: &Hit) {
+        let Some((id, lf, _)) = self.decal_frame(h) else { return };
+        let Some(o) = self.doc.find(id).cloned() else { return };
+        if o.locked {
+            self.status = "That part is locked.".into();
+            return;
+        }
+        let Some(d) = self.decal.clone() else { return };
+        let mut m = (*self.cache.base_mesh(&o)).clone();
+        if let Some(p) = o.paint.as_ref().filter(|p| p.len() == m.colors.len()) {
+            for (c, &pc) in m.colors.iter_mut().zip(p) {
+                if pc != NO_COLOR {
+                    *c = pc;
+                }
+            }
+        }
+        m.fill_unset_color(o.color);
+        let (out, n) = d.apply(&m, &lf, &self.doc.filaments);
+        if n == 0 {
+            self.status = "Nothing to paint there — try a face that points toward you.".into();
+            return;
+        }
+        if let Some(ob) = self.doc.find_mut(id) {
+            ob.kind = Kind::Mesh(Arc::new(out));
+            ob.paint = None;
+        }
+        self.selection = vec![id];
+        self.touch();
+        self.tool = Tool::Select;
+        self.status = "Picture painted on. Ctrl+Z (Cmd+Z on Mac) to undo; the part keeps its size and position but its shape settings no longer apply.".into();
+    }
+
+    fn decal_panel(&mut self, ui: &mut egui::Ui) {
+        crate::theme::section(ui, "Picture on a part");
+        let Some(d) = &mut self.decal else {
+            ui.label(RichText::new("No picture loaded. Use File > Picture to 3D… and choose \"On a part's surface\".").weak());
+            return;
+        };
+        ui.label("Move over a part to see where the picture lands, then click to paint it on.");
+        if let Some(t) = &self.decal_tex {
+            let w = 200.0f32;
+            let h = (w * d.pic.h as f32 / d.pic.w.max(1) as f32).min(160.0);
+            ui.add(egui::Image::new(t).fit_to_exact_size(Vec2::new(w, h)));
+        }
+        ui.add(egui::Slider::new(&mut d.width, 5.0..=250.0).text("width (mm)"));
+        ui.add(egui::Slider::new(&mut d.rotation, -180.0..=180.0).text("turn (°)"));
+        ui.checkbox(&mut d.skip_background, "Leave the background unpainted");
+        ui.checkbox(&mut d.from_view, "Project from my view").on_hover_text("Off: the picture lies flat on the face you point at. On: it is projected straight from the screen — best for wrapping around round parts.");
+        ui.add_space(4.0);
+        if ui.button("Cancel").clicked() {
+            self.tool = Tool::Select;
+        }
+    }
+
     fn paint_at(&mut self, hit: &Hit, fill: bool) {
         let id = self.entries[hit.entry].id;
         let Some(o) = self.doc.find(id).cloned() else { return };
@@ -1573,6 +1708,15 @@ impl App {
                 if ui.button("Picture to 3D (lithophane, relief, colour plate)…").clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
                         self.open_image(p);
+                    }
+                    ui.close();
+                }
+                if ui.button("Picture onto a part's surface…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
+                        self.open_image(p);
+                        if let Some(d) = &mut self.img_dialog {
+                            d.decal = true;
+                        }
                     }
                     ui.close();
                 }
@@ -1800,6 +1944,14 @@ impl App {
                     }
                 }
             });
+            if ui.add_sized([ui.available_width(), 24.0], egui::Button::new("Picture onto a part…")).on_hover_text("Paint a photo or logo onto a part's surface in filament colours").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
+                    self.open_image(p);
+                    if let Some(d) = &mut self.img_dialog {
+                        d.decal = true;
+                    }
+                }
+            }
             ui.separator();
             crate::theme::section(ui, "Filaments");
             ui.label(RichText::new("These become the filament list in Bambu Studio. Set them to match your AMS spools.").small().weak());
@@ -1910,6 +2062,7 @@ impl App {
                         self.measure.clear();
                     }
                 }
+                Tool::Decal => self.decal_panel(ui),
                 Tool::PushPull => {
                     crate::theme::section(ui, "Push / Pull a face");
                     ui.label("Click a flat face, then drag it outward to extrude or inward to cut. Or type an exact distance below.");
@@ -2726,6 +2879,11 @@ impl App {
                     }
                 }
                 Tool::PushPull => {}
+                Tool::Decal => {
+                    if let Some(h) = hit {
+                        self.apply_decal(&h);
+                    }
+                }
             }
         }
 
@@ -2782,6 +2940,28 @@ impl App {
                     painter.circle_stroke(a, a.distance(b2).max(2.0) + 1.5, Stroke::new(1.0, Color32::WHITE));
                 }
                 let _ = p;
+            }
+        }
+        if self.tool == Tool::Decal {
+            if let Some((_, _, wf)) = self.hover.as_ref().and_then(|h| self.decal_frame(h)) {
+                if let Some(d) = &self.decal {
+                    let cs = d.corners(&wf);
+                    let pts: Vec<Pos2> = cs.iter().filter_map(|c| self.camera.project(rect, *c)).collect();
+                    if pts.len() == 4 {
+                        if let Some(t) = &self.decal_tex {
+                            let mut mesh = egui::Mesh::with_texture(t.id());
+                            let tint = Color32::from_white_alpha(190);
+                            for (p, uv) in pts.iter().zip([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]) {
+                                mesh.vertices.push(egui::epaint::Vertex { pos: *p, uv: Pos2::new(uv.0, uv.1), color: tint });
+                            }
+                            mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                            painter.add(egui::Shape::mesh(mesh));
+                        }
+                        let mut ring = pts.clone();
+                        ring.push(pts[0]);
+                        painter.add(egui::Shape::line(ring, Stroke::new(2.0, crate::theme::accent())));
+                    }
+                }
             }
         }
         for (i, m) in self.measure.iter().enumerate() {

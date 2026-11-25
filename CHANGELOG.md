@@ -2,6 +2,16 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.4.2 — 2026-11-24
+- **Picture onto a part** (File menu, the Shapes panel, or "On a part's surface" in the
+  Picture dialog): paints a photo or logo onto a part's surface in your filament colours.
+  - A see-through preview follows the mouse so you can see where it lands; click to paint.
+  - Width, turn (rotation), "leave the background unpainted" (skips the white around a
+    logo; transparent PNG areas are always skipped) and which filaments it may use.
+  - Lies flat on the face you point at, or "Project from my view" to wrap round parts.
+  - Only surfaces facing the picture and not hidden behind other parts get painted; the
+    surface is finely subdivided under the picture so detail is kept. Undo works as usual.
+
 ## 0.4.1 — 2026-11-24
 - **24 more ready-made parts**, and the parts are now grouped into Hardware, Mounting and
   Home & storage:

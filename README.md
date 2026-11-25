@@ -64,6 +64,7 @@ own settings in the Inspector:
 
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
+- **Picture onto a part:** paint a photo or logo onto any part's surface in filament colours.
 - **Logo from SVG:** multi-colour logos, one filament per SVG colour.
 
 ### Helpers
