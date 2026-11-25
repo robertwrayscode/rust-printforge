@@ -2,6 +2,17 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.3.0 — 2026-11-24
+- **Picture to 3D** (File menu, Shapes panel, or drop a PNG/JPG onto the window):
+  - *Lithophane* — thin where the photo is bright, thick where dark; glows when lit from behind.
+  - *Raised relief* — a plate with the picture raised (or sunk, with Invert).
+  - *Colour plate* — a flat plate coloured with your filaments, each spot using the closest
+    filament colour (pick which filaments it may use).
+  - Width, thicknesses, frame and detail are adjustable.
+- **Logo from SVG**: each colour in the SVG becomes a part in the matching filament (new
+  filaments are added automatically), stacked shapes are cut so they don't overlap, and the
+  parts are grouped into one multi-colour logo. Strokes (outlines) are supported too.
+
 ## 0.2.0 — 2026-11-24
 - **✨ Make it printable:** one click turns each part onto its best face (more flat contact,
   fewer overhangs), puts everything on the plate, spreads overlapping parts out, flags tall

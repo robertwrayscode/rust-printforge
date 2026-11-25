@@ -52,6 +52,10 @@ cargo run --release
   flipped faces, removes duplicate faces).
 - Projects save as `.pforge` files.
 
+### Pictures and logos
+- **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
+- **Logo from SVG:** multi-colour logos, one filament per SVG colour.
+
 ### Helpers
 - **Make it printable** (best face down, onto the plate, spread out, checked), **Overhangs** view,
   drag-and-drop files, **Open recent**, auto-save with crash recovery.

@@ -535,7 +535,7 @@ impl ttf_parser::OutlineBuilder for Outline {
     }
 }
 
-fn point_in_poly(p: DVec2, poly: &[DVec2]) -> bool {
+pub fn point_in_poly(p: DVec2, poly: &[DVec2]) -> bool {
     let mut inside = false;
     let n = poly.len();
     let mut j = n - 1;
@@ -575,32 +575,7 @@ pub fn text_polygons(text: &str, font: FontChoice, spacing: f64) -> Vec<Vec<Vec<
             x += face.glyph_hor_advance(gid).unwrap_or(0) as f64 + spacing * upm;
         }
     }
-    // nesting depth decides outer vs hole
-    let depth: Vec<usize> = contours
-        .iter()
-        .enumerate()
-        .map(|(i, c)| contours.iter().enumerate().filter(|(j, o)| *j != i && point_in_poly(c[0], o)).count())
-        .collect();
-    let mut groups: Vec<Vec<Vec<DVec2>>> = Vec::new();
-    let mut outer_idx: Vec<usize> = Vec::new();
-    for (i, c) in contours.iter().enumerate() {
-        if depth[i] % 2 == 0 {
-            outer_idx.push(i);
-            groups.push(vec![c.clone()]);
-        }
-    }
-    for (i, c) in contours.iter().enumerate() {
-        if depth[i] % 2 == 1 {
-            // innermost containing outer: the one with depth == depth[i]-1 that contains it
-            if let Some(g) = outer_idx
-                .iter()
-                .position(|&o| depth[o] + 1 == depth[i] && point_in_poly(c[0], &contours[o]))
-            {
-                groups[g].push(c.clone());
-            }
-        }
-    }
-    groups
+    nest_contours(contours)
 }
 
 #[cfg(test)]
@@ -630,4 +605,34 @@ mod tests {
             assert!(b.min.z.abs() < 1e-9, "{} not on bed", info.name);
         }
     }
+}
+
+/// Group closed contours into (outer, holes...) by nesting depth (even-odd).
+pub fn nest_contours(contours: Vec<Vec<DVec2>>) -> Vec<Vec<Vec<DVec2>>> {
+    // nesting depth decides outer vs hole
+    let depth: Vec<usize> = contours
+        .iter()
+        .enumerate()
+        .map(|(i, c)| contours.iter().enumerate().filter(|(j, o)| *j != i && point_in_poly(c[0], o)).count())
+        .collect();
+    let mut groups: Vec<Vec<Vec<DVec2>>> = Vec::new();
+    let mut outer_idx: Vec<usize> = Vec::new();
+    for (i, c) in contours.iter().enumerate() {
+        if depth[i] % 2 == 0 {
+            outer_idx.push(i);
+            groups.push(vec![c.clone()]);
+        }
+    }
+    for (i, c) in contours.iter().enumerate() {
+        if depth[i] % 2 == 1 {
+            // innermost containing outer: the one with depth == depth[i]-1 that contains it
+            if let Some(g) = outer_idx
+                .iter()
+                .position(|&o| depth[o] + 1 == depth[i] && point_in_poly(c[0], &contours[o]))
+            {
+                groups[g].push(c.clone());
+            }
+        }
+    }
+    groups
 }

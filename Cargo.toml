@@ -1,6 +1,6 @@
 [package]
 name = "roboforge"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Tinkercad-style 3D designer with colour export and print checking for Bambu Lab printers"
 license = "MIT"
@@ -16,6 +16,7 @@ eframe = { version = "0.36", default-features = false, features = ["glow", "defa
 egui = "0.36"
 epaint_default_fonts = "0.36"
 glam = { version = "0.32", features = ["mint", "serde"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
 mint = "0.5.9"
 png = "0.18.1"
 quick-xml = "0.42.0"
@@ -25,4 +26,5 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.154"
 transform-gizmo-egui = "0.11"
 ttf-parser = "0.25.1"
+usvg = "0.50.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }

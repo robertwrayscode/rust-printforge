@@ -153,6 +153,20 @@ fn line_param(o: DVec3, dir: DVec3, ro: DVec3, rd: DVec3) -> f64 {
     if den.abs() < 1e-9 { 0.0 } else { (b * e - d) / den }
 }
 
+struct ImgDialog {
+    path: PathBuf,
+    pic: Arc<crate::imaging::Picture>,
+    tex: Option<egui::TextureHandle>,
+    opts: crate::imaging::ImageOptions,
+}
+
+struct SvgDialog {
+    path: PathBuf,
+    layers: Vec<crate::imaging::SvgLayer>,
+    width: f64,
+    height: f64,
+}
+
 struct Hit {
     entry: usize,
     tri: u32,
@@ -210,6 +224,9 @@ pub struct App {
     export_confirm: Option<(ExportKind, PathBuf)>,
     // misc
     file: Option<PathBuf>,
+    opened_at_start: bool,
+    img_dialog: Option<ImgDialog>,
+    svg_dialog: Option<SvgDialog>,
     last_autosave: std::time::Instant,
     recover_offer: bool,
     show_overhangs: bool,
@@ -284,6 +301,9 @@ impl App {
             pending_export: None,
             export_confirm: None,
             file,
+            opened_at_start: false,
+            img_dialog: None,
+            svg_dialog: None,
             last_autosave: std::time::Instant::now(),
             recover_offer: crate::settings::autosave_path().map(|p| p.exists()).unwrap_or(false),
             show_overhangs: false,
@@ -896,13 +916,22 @@ impl App {
     }
 
     fn import(&mut self) {
-        let Some(paths) = rfd::FileDialog::new().add_filter("3D models", &["stl", "obj", "3mf"]).pick_files() else { return };
+        let Some(paths) = rfd::FileDialog::new().add_filter("3D models, pictures, SVG", &["stl", "obj", "3mf", "png", "jpg", "jpeg", "svg"]).pick_files() else { return };
         for p in paths {
             self.import_path(&p);
         }
     }
 
     fn import_path(&mut self, p: &std::path::Path) {
+        let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if ["png", "jpg", "jpeg", "bmp", "webp", "gif"].contains(&ext.as_str()) {
+            self.open_image(p.to_path_buf());
+            return;
+        }
+        if ext == "svg" {
+            self.open_svg(p.to_path_buf());
+            return;
+        }
         match io::import_file(p) {
             Ok(r) => {
                 self.add_imported(r);
@@ -958,6 +987,200 @@ impl App {
         self.status = format!("Imported {} object(s).{}", ids.len(), if warn_units { " It's tiny — it may be in inches or metres; scale it up in the inspector." } else { "" });
         self.selection = ids;
         self.touch();
+    }
+
+    fn open_image(&mut self, path: PathBuf) {
+        match crate::imaging::load_picture(&path) {
+            Ok(pic) => {
+                let mut opts = crate::imaging::ImageOptions::default();
+                opts.use_filaments = vec![true; self.doc.filaments.len()];
+                self.img_dialog = Some(ImgDialog { path, pic: Arc::new(pic), tex: None, opts });
+            }
+            Err(e) => self.status = format!("Couldn't read that picture: {e}"),
+        }
+    }
+
+    fn open_svg(&mut self, path: PathBuf) {
+        match std::fs::read(&path).map_err(|e| e.to_string()).and_then(|d| crate::imaging::load_svg(&d)) {
+            Ok(layers) => self.svg_dialog = Some(SvgDialog { path, layers, width: 60.0, height: 3.0 }),
+            Err(e) => self.status = format!("Couldn't read that SVG: {e}"),
+        }
+    }
+
+    fn slot_for_color(&mut self, c: [u8; 3]) -> u8 {
+        let near = self
+            .doc
+            .filaments
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (i, (0..3).map(|k| (f.color[k] as i32 - c[k] as i32).pow(2)).sum::<i32>()))
+            .min_by_key(|x| x.1);
+        match near {
+            Some((i, d)) if d < 40 * 40 * 3 || self.doc.filaments.len() >= 24 => i as u8,
+            _ => {
+                self.doc.filaments.push(Filament { name: format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]), color: c, material: "PLA".into() });
+                (self.doc.filaments.len() - 1) as u8
+            }
+        }
+    }
+
+    fn place_new_mesh(&mut self, name: &str, mesh: Mesh) -> u64 {
+        let (m, size, _off) = normalize_mesh(mesh);
+        let id = self.doc.alloc_id();
+        let o = Object::new(id, name, Kind::Mesh(Arc::new(m)), size);
+        self.doc.objects.push(o);
+        id
+    }
+
+    fn picture_windows(&mut self, ctx: &egui::Context) {
+        use crate::imaging::ImageMode;
+        let mut close_img = false;
+        let mut create_img = None;
+        if let Some(d) = &mut self.img_dialog {
+            if d.tex.is_none() {
+                let img = egui::ColorImage::from_rgba_unmultiplied([d.pic.w as usize, d.pic.h as usize], &d.pic.rgba);
+                d.tex = Some(ctx.load_texture("img-preview", img, egui::TextureOptions::LINEAR));
+            }
+            let mut open = true;
+            egui::Window::new("Picture to 3D").open(&mut open).resizable(false).default_width(380.0).show(ctx, |ui| {
+                ui.label(RichText::new(d.path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()).weak());
+                if let Some(t) = &d.tex {
+                    let w = 340.0f32;
+                    let h = w * d.pic.h as f32 / d.pic.w as f32;
+                    ui.add(egui::Image::new(t).fit_to_exact_size(Vec2::new(w, h.min(260.0))));
+                }
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut d.opts.mode, ImageMode::Lithophane, "Lithophane");
+                    ui.selectable_value(&mut d.opts.mode, ImageMode::Relief, "Raised relief");
+                    ui.selectable_value(&mut d.opts.mode, ImageMode::ColourPlate, "Colour plate");
+                });
+                let hint = match d.opts.mode {
+                    ImageMode::Lithophane => "Thin where the photo is bright, thick where dark. Print in white and hold it up to a light. Tip: print it standing up for best detail.",
+                    ImageMode::Relief => "A plate with the bright parts raised (tick Invert to raise the dark parts).",
+                    ImageMode::ColourPlate => "A flat plate whose top is coloured with your filaments — each spot uses the closest filament colour.",
+                };
+                ui.label(RichText::new(hint).small().weak());
+                ui.add(egui::Slider::new(&mut d.opts.width_mm, 20.0..=300.0).text("width (mm)"));
+                match d.opts.mode {
+                    ImageMode::Lithophane => {
+                        ui.add(egui::Slider::new(&mut d.opts.min_mm, 0.4..=3.0).text("thinnest (mm)"));
+                        ui.add(egui::Slider::new(&mut d.opts.max_mm, 1.0..=8.0).text("thickest (mm)"));
+                    }
+                    ImageMode::Relief => {
+                        ui.add(egui::Slider::new(&mut d.opts.min_mm, 0.6..=5.0).text("base (mm)"));
+                        ui.add(egui::Slider::new(&mut d.opts.max_mm, 0.4..=15.0).text("relief height (mm)"));
+                    }
+                    ImageMode::ColourPlate => {
+                        ui.add(egui::Slider::new(&mut d.opts.min_mm, 0.8..=6.0).text("plate thickness (mm)"));
+                        ui.label("Use these filaments:");
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, f) in self.doc.filaments.iter().enumerate() {
+                                if d.opts.use_filaments.len() <= i {
+                                    d.opts.use_filaments.push(true);
+                                }
+                                let on = &mut d.opts.use_filaments[i];
+                                let (r, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                                ui.painter().rect_filled(r, 3.0, c32(f.color));
+                                ui.painter().rect_stroke(r, 3.0, Stroke::new(if *on { 2.5 } else { 1.0 }, if *on { crate::theme::accent() } else { Color32::from_gray(90) }), egui::StrokeKind::Outside);
+                                if !*on {
+                                    ui.painter().line_segment([r.left_top(), r.right_bottom()], Stroke::new(2.0, Color32::from_gray(160)));
+                                }
+                                if resp.on_hover_text(&f.name).clicked() {
+                                    *on = !*on;
+                                }
+                            }
+                        });
+                    }
+                }
+                ui.add(egui::Slider::new(&mut d.opts.border_mm, 0.0..=10.0).text("frame (mm)"));
+                ui.add(egui::Slider::new(&mut d.opts.detail, 1.0..=8.0).text("detail (points/mm)"));
+                if d.opts.mode != ImageMode::ColourPlate {
+                    ui.checkbox(&mut d.opts.invert, "Invert");
+                }
+                ui.add_space(4.0);
+                if ui.button(RichText::new("Create").strong()).clicked() {
+                    create_img = Some((d.pic.clone(), d.opts.clone()));
+                }
+            });
+            if !open {
+                close_img = true;
+            }
+        }
+        if let Some((pic, opts)) = create_img {
+            let mesh = crate::imaging::picture_to_mesh(&pic, &opts, &self.doc.filaments);
+            let name = match opts.mode {
+                crate::imaging::ImageMode::Lithophane => "Lithophane",
+                crate::imaging::ImageMode::Relief => "Relief",
+                crate::imaging::ImageMode::ColourPlate => "Photo plate",
+            };
+            let id = self.place_new_mesh(name, mesh);
+            self.selection = vec![id];
+            self.touch();
+            self.fit_view(true);
+            self.status = format!("Created {name}.");
+            close_img = true;
+        }
+        if close_img {
+            self.img_dialog = None;
+        }
+        // SVG
+        let mut close_svg = false;
+        let mut create_svg = false;
+        if let Some(d) = &mut self.svg_dialog {
+            let mut open = true;
+            egui::Window::new("Logo from SVG").open(&mut open).resizable(false).show(ctx, |ui| {
+                ui.label(RichText::new(d.path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()).weak());
+                ui.label(format!("{} colour layer(s):", d.layers.len()));
+                ui.horizontal_wrapped(|ui| {
+                    for l in &d.layers {
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                        ui.painter().rect_filled(r, 3.0, c32(l.color));
+                        ui.painter().rect_stroke(r, 3.0, Stroke::new(1.0, Color32::from_gray(120)), egui::StrokeKind::Inside);
+                    }
+                });
+                ui.add(egui::Slider::new(&mut d.width, 5.0..=300.0).text("width (mm)"));
+                ui.add(egui::Slider::new(&mut d.height, 0.4..=30.0).text("thickness (mm)"));
+                ui.label(RichText::new("Each colour becomes its own part in the matching filament (new filaments are added for colours you don't have), grouped together.").small().weak());
+                if ui.button(RichText::new("Create").strong()).clicked() {
+                    create_svg = true;
+                }
+            });
+            if !open {
+                close_svg = true;
+            }
+        }
+        if create_svg {
+            let d = self.svg_dialog.take().unwrap();
+            let meshes = crate::imaging::svg_meshes(&d.layers, d.width, d.height);
+            let mut ids = vec![];
+            for (col, mut m) in meshes {
+                let slot = self.slot_for_color(col);
+                m.set_color(NO_COLOR);
+                let (nm, size, off) = normalize_mesh(m);
+                let id = self.doc.alloc_id();
+                let mut o = Object::new(id, &format!("Logo #{:02X}{:02X}{:02X}", col[0], col[1], col[2]), Kind::Mesh(Arc::new(nm)), size);
+                o.pos = off;
+                o.color = slot;
+                self.doc.objects.push(o);
+                ids.push(id);
+            }
+            if ids.len() > 1 {
+                if let Some(g) = self.doc.group(&ids, &mut self.cache) {
+                    if let Some(o) = self.doc.find_mut(g) {
+                        o.name = d.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("Logo".into());
+                    }
+                    ids = vec![g];
+                }
+            }
+            self.selection = ids;
+            self.touch();
+            self.fit_view(true);
+            self.status = "Logo created.".into();
+            close_svg = true;
+        }
+        if close_svg {
+            self.svg_dialog = None;
+        }
     }
 
     fn request_export(&mut self, kind: ExportKind) {
@@ -1327,6 +1550,18 @@ impl App {
                     self.import();
                     ui.close();
                 }
+                if ui.button("Picture to 3D (lithophane, relief, colour plate)…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
+                        self.open_image(p);
+                    }
+                    ui.close();
+                }
+                if ui.button("Logo from SVG…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).pick_file() {
+                        self.open_svg(p);
+                    }
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button("Export for Bambu Studio (H2C, colour) …").clicked() {
                     self.request_export(ExportKind::Bambu);
@@ -1524,6 +1759,19 @@ impl App {
             if ui.add_sized([ui.available_width(), 24.0], egui::Button::new("Import STL / OBJ / 3MF…")).clicked() {
                 self.import();
             }
+            ui.horizontal(|ui| {
+                let w = (ui.available_width() - 6.0) / 2.0;
+                if ui.add_sized([w, 24.0], egui::Button::new("Picture to 3D…")).on_hover_text("Lithophane, raised relief or colour photo plate").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
+                        self.open_image(p);
+                    }
+                }
+                if ui.add_sized([w, 24.0], egui::Button::new("Logo from SVG…")).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).pick_file() {
+                        self.open_svg(p);
+                    }
+                }
+            });
             ui.separator();
             crate::theme::section(ui, "Filaments");
             ui.label(RichText::new("These become the filament list in Bambu Studio. Set them to match your AMS spools.").small().weak());
@@ -3212,6 +3460,10 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if let Some(p) = std::env::var_os("ROBOFORGE_OPEN_AT_START").filter(|_| !self.opened_at_start) {
+            self.opened_at_start = true;
+            self.import_path(std::path::Path::new(&p));
+        }
         // files dropped onto the window
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
         for p in dropped {
@@ -3257,6 +3509,7 @@ impl eframe::App for App {
         egui::Panel::right("right").resizable(true).default_size(300.0).show(ui, |ui| self.right_panel(ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
         self.windows(&ctx);
+        self.picture_windows(&ctx);
         // drop-target hint
         if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
             let r = ctx.content_rect();
@@ -3297,6 +3550,11 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             self.screenshot = None;
             return;
+        }
+        if frame == 1 {
+            if let Ok(p) = std::env::var("ROBOFORGE_SHOT_OPEN") {
+                self.import_path(std::path::Path::new(&p));
+            }
         }
         if frame == 2 {
             self.fit_view(false);

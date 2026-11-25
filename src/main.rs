@@ -12,6 +12,7 @@ pub mod shapes;
 pub mod thumbs;
 pub mod theme;
 pub mod settings;
+pub mod imaging;
 
 use std::path::PathBuf;
 
