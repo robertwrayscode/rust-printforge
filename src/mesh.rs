@@ -877,3 +877,89 @@ mod pushpull_tests {
         assert!((r2.mesh.volume() - 20.0 * 20.0 * 15.0).abs() < 1e-3, "{}", r2.mesh.volume());
     }
 }
+
+impl Mesh {
+    /// Split triangles that cross the horizontal plane z = h so that no triangle spans it.
+    /// Shared edges are cut at the same new vertex, so the mesh stays watertight.
+    pub fn split_at_z(&self, h: f64) -> Mesh {
+        let eps = 1e-7;
+        let mut m = Mesh::new();
+        m.verts = self.verts.clone();
+        let mut cut: HashMap<(u32, u32), u32> = HashMap::new();
+        let side = |v: &DVec3| if v.z > h + eps { 1 } else if v.z < h - eps { -1 } else { 0 };
+        let mut edge_point = |a: u32, b: u32, m: &mut Mesh| -> u32 {
+            let key = (a.min(b), a.max(b));
+            if let Some(&i) = cut.get(&key) {
+                return i;
+            }
+            let (pa, pb) = (m.verts[a as usize], m.verts[b as usize]);
+            let t = (h - pa.z) / (pb.z - pa.z);
+            let p = pa + (pb - pa) * t;
+            let i = m.add_vert(DVec3::new(p.x, p.y, h));
+            cut.insert(key, i);
+            i
+        };
+        for (t, &c) in self.tris.iter().zip(&self.colors) {
+            let s: Vec<i32> = t.iter().map(|&i| side(&self.verts[i as usize])).collect();
+            let crosses = |i: usize, j: usize| s[i] * s[j] < 0;
+            let n_cross = (0..3).filter(|&k| crosses(k, (k + 1) % 3)).count();
+            let push = |x: [u32; 3], m: &mut Mesh| {
+                m.tris.push(x);
+                m.colors.push(c);
+            };
+            if n_cross == 0 {
+                push(*t, &mut m);
+                continue;
+            }
+            // rotate so the "odd one out" vertex is first
+            let mut k0 = 0;
+            for k in 0..3 {
+                let (a, b, cc) = (s[k], s[(k + 1) % 3], s[(k + 2) % 3]);
+                if n_cross == 2 && a != 0 && b != 0 && cc != 0 && a != b && a != cc {
+                    k0 = k;
+                }
+                if n_cross == 1 && a == 0 {
+                    k0 = k;
+                }
+            }
+            let v = [t[k0], t[(k0 + 1) % 3], t[(k0 + 2) % 3]];
+            if n_cross == 2 {
+                // v0 alone on one side
+                let p01 = edge_point(v[0], v[1], &mut m);
+                let p02 = edge_point(v[0], v[2], &mut m);
+                push([v[0], p01, p02], &mut m);
+                push([p01, v[1], v[2]], &mut m);
+                push([p01, v[2], p02], &mut m);
+            } else {
+                // v0 on the plane, edge v1-v2 crosses
+                let p12 = edge_point(v[1], v[2], &mut m);
+                push([v[0], v[1], p12], &mut m);
+                push([v[0], p12, v[2]], &mut m);
+            }
+        }
+        m
+    }
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    #[test]
+    fn split_box_keeps_volume_and_closure() {
+        let m = crate::shapes::Shape::Sphere { steps: 16 }.generate(DVec3::splat(20.0));
+        let s = m.split_at_z(7.3).split_at_z(12.0);
+        assert!((s.volume() - m.volume()).abs() < 1e-6);
+        let mut e = std::collections::HashSet::new();
+        for t in &s.tris {
+            for k in 0..3 {
+                e.insert((t[k], t[(k + 1) % 3]));
+            }
+        }
+        assert!(e.iter().all(|&(a, b)| e.contains(&(b, a))), "not watertight");
+        for t in 0..s.tris.len() {
+            let [a, b, c] = s.tri_points(t);
+            let (lo, hi) = (a.z.min(b.z).min(c.z), a.z.max(b.z).max(c.z));
+            assert!(!(lo < 7.3 - 1e-6 && hi > 7.3 + 1e-6), "triangle spans plane");
+        }
+    }
+}

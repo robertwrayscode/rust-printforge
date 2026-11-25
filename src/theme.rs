@@ -80,22 +80,12 @@ pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(1.0);
 }
 
-fn config_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("APPDATA").or_else(|| std::env::var_os("HOME"))?;
-    Some(std::path::PathBuf::from(base).join(".roboforge-settings"))
-}
-
 pub fn load_saved() -> bool {
-    config_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| !s.contains("theme=light"))
-        .unwrap_or(true)
+    !crate::settings::get("theme").iter().any(|v| v == "light")
 }
 
 pub fn save(dark: bool) {
-    if let Some(p) = config_path() {
-        let _ = std::fs::write(p, if dark { "theme=dark\n" } else { "theme=light\n" });
-    }
+    crate::settings::set("theme", &[if dark { "dark".into() } else { "light".into() }]);
 }
 
 pub fn apply(ctx: &egui::Context, is_dark: bool) {

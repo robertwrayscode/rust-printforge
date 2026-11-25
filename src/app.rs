@@ -92,11 +92,12 @@ pub enum GizmoKind {
     Scale,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum PendingAction {
     Close,
     New,
     Open,
+    OpenPath(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -209,6 +210,11 @@ pub struct App {
     export_confirm: Option<(ExportKind, PathBuf)>,
     // misc
     file: Option<PathBuf>,
+    last_autosave: std::time::Instant,
+    recover_offer: bool,
+    show_overhangs: bool,
+    bands: Vec<(f64, u8)>,
+    printable_report: Option<Vec<String>>,
     resize: Option<ResizeDrag>,
     pp: Option<PushPull>,
     thumbs: Vec<egui::TextureHandle>,
@@ -278,6 +284,11 @@ impl App {
             pending_export: None,
             export_confirm: None,
             file,
+            last_autosave: std::time::Instant::now(),
+            recover_offer: crate::settings::autosave_path().map(|p| p.exists()).unwrap_or(false),
+            show_overhangs: false,
+            bands: vec![(0.0, 0), (5.0, 2)],
+            printable_report: None,
             resize: None,
             pp: None,
             thumbs: vec![],
@@ -665,6 +676,153 @@ impl App {
         self.saved_edits = 0;
     }
 
+    fn clear_autosave(&mut self) {
+        if let Some(p) = crate::settings::autosave_path() {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// Re-orient every free-standing part for printing: best face down, on the plate,
+    /// spread out on the bed.
+    fn make_printable(&mut self) {
+        let mut lines = vec![];
+        let ids: Vec<u64> = self.doc.objects.iter().filter(|o| o.visible && !o.hole && !o.locked).map(|o| o.id).collect();
+        let bounds: Vec<Aabb> = ids.iter().map(|&id| self.world_bounds(id)).collect();
+        let resting = crate::check::resting_on(&bounds);
+        let deg = self.overhang_deg;
+        for (k, &id) in ids.iter().enumerate() {
+            if resting[k].is_some() {
+                continue; // stacked parts stay with what they sit on
+            }
+            let Some(o) = self.doc.find(id).cloned() else { continue };
+            let wm = self.cache.world_mesh(&o);
+            let c = wm.bounds().center();
+            // candidate "down" directions: the 6 axes + the 3 biggest flat faces
+            let mut dirs: Vec<DVec3> = vec![DVec3::NEG_Z, DVec3::Z, DVec3::X, DVec3::NEG_X, DVec3::Y, DVec3::NEG_Y];
+            let mut by_n: HashMap<(i32, i32, i32), (DVec3, f64)> = HashMap::new();
+            for t in 0..wm.tris.len() {
+                let (n, a) = wm.tri_normal_area(t);
+                let key = ((n.x * 20.0).round() as i32, (n.y * 20.0).round() as i32, (n.z * 20.0).round() as i32);
+                let e = by_n.entry(key).or_insert((DVec3::ZERO, 0.0));
+                e.0 += n * a;
+                e.1 += a;
+            }
+            let mut faces: Vec<(DVec3, f64)> = by_n.into_values().collect();
+            faces.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            dirs.extend(faces.iter().take(3).map(|f| f.0.normalize_or_zero()).filter(|d| d.length() > 0.5));
+            let score = |q: DQuat| -> (f64, f64, f64) {
+                let pts: Vec<DVec3> = wm.verts.iter().map(|v| q * (*v - c)).collect();
+                let minz = pts.iter().map(|p| p.z).fold(f64::INFINITY, f64::min);
+                let maxz = pts.iter().map(|p| p.z).fold(f64::NEG_INFINITY, f64::max);
+                let (mut contact, mut over) = (0.0, 0.0);
+                let lim = (90.0 - deg).to_radians().cos();
+                for t in &wm.tris {
+                    let (a, b, cc) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
+                    let nn = (b - a).cross(cc - a);
+                    let area = nn.length() * 0.5;
+                    if area < 1e-12 {
+                        continue;
+                    }
+                    let n = nn / (2.0 * area);
+                    let low = a.z.max(b.z).max(cc.z) < minz + 0.05;
+                    if n.z < -0.995 && low {
+                        contact += area;
+                    } else if n.z < -lim && a.z.min(b.z).min(cc.z) > minz + 0.1 {
+                        over += area;
+                    }
+                }
+                (over - 3.0 * contact + 0.02 * (maxz - minz), contact, over)
+            };
+            let base = score(DQuat::IDENTITY);
+            let mut best = (DQuat::IDENTITY, base);
+            for d in dirs {
+                let q = DQuat::from_rotation_arc(d.normalize(), DVec3::NEG_Z);
+                let sc = score(q);
+                if sc.0 < best.1.0 - 1.0 {
+                    best = (q, sc);
+                }
+            }
+            let rotated = best.0 != DQuat::IDENTITY;
+            if let Some(ob) = self.doc.find_mut(id) {
+                if rotated {
+                    ob.set_rotation(best.0 * ob.rotation());
+                }
+            }
+            if rotated {
+                lines.push(format!("• '{}': turned onto a better face (overhangs {:.0} to {:.0} mm², flat contact {:.0} to {:.0} mm²).", o.name, base.2, best.1.2, base.1, best.1.1));
+            }
+            let h = self.world_bounds(id).size().z;
+            if best.1.1 > 0.0 && h / best.1.1.sqrt() > 8.0 && h > 30.0 {
+                lines.push(format!("• '{}' is tall on a small base — enable a brim in Bambu Studio (Others > Brim).", o.name));
+            }
+        }
+        self.touch();
+        self.refresh_world();
+        // everything onto the plate
+        let all: Vec<u64> = ids.clone();
+        let bs: Vec<Aabb> = all.iter().map(|&id| self.world_bounds(id)).collect();
+        let rest = crate::check::resting_on(&bs);
+        for (k, &id) in all.iter().enumerate() {
+            if rest[k].is_none() && bs[k].min.z.abs() > 0.005 {
+                if let Some(o) = self.doc.find_mut(id) {
+                    o.pos.z -= bs[k].min.z;
+                }
+            }
+        }
+        self.touch();
+        self.refresh_world();
+        // spread out if parts overlap or leave the plate
+        let bs: Vec<Aabb> = all.iter().map(|&id| self.world_bounds(id)).collect();
+        let (hx, hy) = (self.doc.printer.bed_multi[0] / 2.0, self.doc.printer.bed_multi[1] / 2.0);
+        let off_bed = bs.iter().any(|b| b.min.x < -hx || b.max.x > hx || b.min.y < -hy || b.max.y > hy);
+        let mut overlap = false;
+        for i in 0..bs.len() {
+            for j in i + 1..bs.len() {
+                let (a, b) = (&bs[i], &bs[j]);
+                if a.min.x < b.max.x && b.min.x < a.max.x && a.min.y < b.max.y && b.min.y < a.max.y && rest[i].is_none() && rest[j].is_none() {
+                    overlap = true;
+                }
+            }
+        }
+        if off_bed || overlap {
+            self.arrange();
+            lines.push("• Parts were overlapping or off the plate, so they were spread out on the plate.".into());
+        }
+        lines.push("• Everything is sitting on the plate.".into());
+        self.start_check();
+        lines.push("• A print check is running — see the right panel for anything left to fix.".into());
+        self.status = "Made printable.".into();
+        self.printable_report = Some(lines);
+    }
+
+    /// Bake horizontal colour stripes into the selected part.
+    fn apply_bands(&mut self) {
+        let Some(&id) = self.selection.first() else { return };
+        let Some(o) = self.doc.find(id).cloned() else { return };
+        let mut wm = self.cache.world_mesh(&o);
+        let bottom = wm.bounds().min.z;
+        let mut bands = self.bands.clone();
+        bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for (h, _) in &bands {
+            if *h > 0.0 {
+                wm = wm.split_at_z(bottom + h);
+            }
+        }
+        for t in 0..wm.tris.len() {
+            let z = wm.tri_centroid(t).z - bottom;
+            if let Some((_, col)) = bands.iter().rev().find(|(h, _)| z >= *h - 1e-6) {
+                wm.colors[t] = *col;
+            }
+        }
+        let local = wm.transformed(&o.transform().inverse());
+        if let Some(ob) = self.doc.find_mut(id) {
+            ob.kind = Kind::Mesh(Arc::new(local));
+            ob.paint = None;
+        }
+        self.touch();
+        self.status = format!("Applied {} colour bands to '{}'.", bands.len(), o.name);
+    }
+
     fn unsaved(&self) -> bool {
         self.edits != self.saved_edits && !self.doc.objects.is_empty()
             || self.edits != self.saved_edits && self.file.is_some()
@@ -687,17 +845,23 @@ impl App {
             }
             PendingAction::New => self.new_doc(),
             PendingAction::Open => self.open(),
+            PendingAction::OpenPath(p) => self.open_path(p),
         }
     }
 
     fn open(&mut self) {
         let Some(p) = rfd::FileDialog::new().add_filter("RoboForge project", &["pforge"]).pick_file() else { return };
+        self.open_path(p);
+    }
+
+    fn open_path(&mut self, p: PathBuf) {
         match io::load_project(&p) {
             Ok(d) => {
                 self.new_doc();
                 self.doc = d;
                 self.committed = self.doc.clone();
                 self.status = format!("Opened {}", p.display());
+                crate::settings::add_recent(&p);
                 self.file = Some(p);
                 self.edits = 0;
                 self.saved_edits = 0;
@@ -718,7 +882,9 @@ impl App {
         match io::save_project(&p, &self.doc) {
             Ok(()) => {
                 self.status = format!("Saved {}", p.display());
+                crate::settings::add_recent(&p);
                 self.file = Some(p);
+                self.clear_autosave();
                 self.saved_edits = self.edits;
                 true
             }
@@ -732,10 +898,17 @@ impl App {
     fn import(&mut self) {
         let Some(paths) = rfd::FileDialog::new().add_filter("3D models", &["stl", "obj", "3mf"]).pick_files() else { return };
         for p in paths {
-            match io::import_file(&p) {
-                Ok(r) => self.add_imported(r),
-                Err(e) => self.status = format!("Import failed for {}: {e}", p.display()),
+            self.import_path(&p);
+        }
+    }
+
+    fn import_path(&mut self, p: &std::path::Path) {
+        match io::import_file(p) {
+            Ok(r) => {
+                self.add_imported(r);
+                crate::settings::add_recent(p);
             }
+            Err(e) => self.status = format!("Import failed for {}: {e}", p.display()),
         }
     }
 
@@ -941,6 +1114,20 @@ impl App {
                 }
             }
         }
+        // overhang view: faces that need support
+        if self.show_overhangs {
+            let lim = (90.0 - self.overhang_deg).to_radians().cos();
+            for e in self.entries.iter().filter(|e| !e.hole) {
+                let minz = e.mesh.bounds().min.z;
+                for t in 0..e.mesh.tris.len() {
+                    let (n, _) = e.mesh.tri_normal_area(t);
+                    let [a, b, c] = e.mesh.tri_points(t);
+                    if n.z < -lim && a.z.min(b.z).min(c.z) > minz.max(0.0) + 0.1 {
+                        overlay.tri(a.as_vec3(), b.as_vec3(), c.as_vec3(), [1.0, 0.45, 0.1, 1.0]);
+                    }
+                }
+            }
+        }
         // push/pull: highlight face and preview the extrusion
         if let Some(pp) = &self.pp {
             if let Some(e) = self.entries.iter().find(|e| e.id == pp.id) {
@@ -1109,6 +1296,24 @@ impl App {
                     self.guarded(PendingAction::Open, &ui.ctx().clone());
                     ui.close();
                 }
+                ui.menu_button("Open recent", |ui| {
+                    let rec = crate::settings::recent();
+                    if rec.is_empty() {
+                        ui.label(RichText::new("Nothing yet").weak());
+                    }
+                    for p in rec {
+                        let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        if ui.button(&name).on_hover_text(p.display().to_string()).clicked() {
+                            let ctx = ui.ctx().clone();
+                            if p.extension().map(|e| e.eq_ignore_ascii_case("pforge")).unwrap_or(false) {
+                                self.guarded(PendingAction::OpenPath(p.clone()), &ctx);
+                            } else {
+                                self.import_path(&p);
+                            }
+                            ui.close();
+                        }
+                    }
+                });
                 if ui.button("Save").clicked() {
                     self.save(false);
                     ui.close();
@@ -1212,7 +1417,27 @@ impl App {
                     ui.close();
                 }
             });
-            ui.separator();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(RichText::new("⬆ Export to Bambu").strong().color(crate::theme::export_green())).clicked() {
+                    self.request_export(ExportKind::Bambu);
+                }
+            if ui.button("✨ Make it printable").on_hover_text("Turn parts onto their best face, put everything on the plate, spread parts out, then check").clicked() {
+                self.make_printable();
+            }
+            if ui.selectable_label(self.show_overhangs, "Overhangs").on_hover_text("Show faces that will need support (orange)").clicked() {
+                self.show_overhangs = !self.show_overhangs;
+                self.geometry_dirty = true;
+            }
+                let checking = self.check_rx.is_some();
+                if ui.add_enabled(!checking, egui::Button::new(RichText::new("✔ Check printability").strong())).clicked() {
+                    self.start_check();
+                }
+            });
+        });
+    }
+
+    fn tool_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
             let mut tool = self.tool;
             ui.selectable_value(&mut tool, Tool::Select, "Select");
             ui.selectable_value(&mut tool, Tool::Paint, "Paint");
@@ -1250,13 +1475,6 @@ impl App {
                 }
             });
             ui.separator();
-            let checking = self.check_rx.is_some();
-            if ui.add_enabled(!checking, egui::Button::new(RichText::new("✔ Check printability").strong())).clicked() {
-                self.start_check();
-            }
-            if ui.button(RichText::new("⬆ Export to Bambu").strong().color(crate::theme::export_green())).clicked() {
-                self.request_export(ExportKind::Bambu);
-            }
         });
     }
 
@@ -1654,6 +1872,41 @@ impl App {
             }
         });
         self.color_picker_paint_info(ui, &o);
+        egui::CollapsingHeader::new("Colour by height (stripes)").default_open(false).show(ui, |ui| {
+            ui.label(RichText::new("From each height up (measured from the part's bottom), use that filament.").small().weak());
+            let mut remove = None;
+            let nfil = self.doc.filaments.len();
+            for (i, (h, c)) in self.bands.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label("from");
+                    ui.add(egui::DragValue::new(h).range(0.0..=1000.0).speed(0.2).suffix(" mm"));
+                    for f in 0..nfil {
+                        let (r, resp) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+                        let col = self.doc.filaments[f].color;
+                        ui.painter().rect_filled(r, 2.0, c32(col));
+                        ui.painter().rect_stroke(r, 2.0, Stroke::new(if *c as usize == f { 2.0 } else { 1.0 }, if *c as usize == f { crate::theme::accent() } else { Color32::from_gray(120) }), egui::StrokeKind::Outside);
+                        if resp.clicked() {
+                            *c = f as u8;
+                        }
+                    }
+                    if ui.small_button("✖").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                self.bands.remove(i);
+            }
+            ui.horizontal(|ui| {
+                if ui.button("+ Add band").clicked() {
+                    let last = self.bands.last().map(|b| b.0).unwrap_or(0.0);
+                    self.bands.push((last + 5.0, (self.bands.len() % nfil.max(1)) as u8));
+                }
+                if ui.add_enabled(!self.bands.is_empty() && !o.locked, egui::Button::new(RichText::new("Apply stripes").strong())).clicked() {
+                    self.apply_bands();
+                }
+            });
+        });
         self.common_buttons(ui);
     }
 
@@ -2795,11 +3048,46 @@ impl App {
             });
             self.show_help = open;
         }
-        if let Some(action) = self.confirm_discard {
+        if self.recover_offer {
+            egui::Window::new("Recover unsaved design?").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                ui.label("RoboForge closed last time without saving. An automatic backup of that design was kept.");
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("Recover it").strong()).clicked() {
+                        if let Some(p) = crate::settings::autosave_path() {
+                            if let Ok(d) = io::load_project(&p) {
+                                self.doc = d;
+                                self.committed = self.doc.clone();
+                                self.edits = 1;
+                                self.saved_edits = 0;
+                                self.geometry_dirty = true;
+                                self.status = "Recovered your unsaved design — remember to Save it.".into();
+                            }
+                        }
+                        self.recover_offer = false;
+                    }
+                    if ui.button("Discard").clicked() {
+                        self.clear_autosave();
+                        self.recover_offer = false;
+                    }
+                });
+            });
+        }
+        if let Some(lines) = self.printable_report.clone() {
+            let mut open = true;
+            egui::Window::new("Make it printable").open(&mut open).resizable(false).show(ctx, |ui| {
+                for l in &lines {
+                    ui.label(l);
+                }
+            });
+            if !open {
+                self.printable_report = None;
+            }
+        }
+        if let Some(action) = self.confirm_discard.clone() {
             let what = match action {
                 PendingAction::Close => "closing",
                 PendingAction::New => "starting a new design",
-                PendingAction::Open => "opening another project",
+                PendingAction::Open | PendingAction::OpenPath(_) => "opening another project",
             };
             egui::Window::new("Unsaved changes").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                 ui.label(RichText::new("Your design has changes that haven't been saved.").strong());
@@ -2809,13 +3097,13 @@ impl App {
                     if ui.button(RichText::new("Save").strong()).clicked() {
                         self.confirm_discard = None;
                         if self.save(false) {
-                            self.run_pending(action, ctx);
+                            self.run_pending(action.clone(), ctx);
                         }
                     }
                     if ui.button("Don't save").clicked() {
                         self.confirm_discard = None;
                         self.saved_edits = self.edits;
-                        self.run_pending(action, ctx);
+                        self.run_pending(action.clone(), ctx);
                     }
                     if ui.button("Cancel").clicked() {
                         self.confirm_discard = None;
@@ -2924,6 +3212,28 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // files dropped onto the window
+        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        for p in dropped {
+            if p.extension().map(|e| e.eq_ignore_ascii_case("pforge")).unwrap_or(false) {
+                self.guarded(PendingAction::OpenPath(p), &ctx);
+            } else {
+                self.import_path(&p);
+            }
+        }
+        // auto-save every minute while there are unsaved changes
+        if self.unsaved() && self.last_autosave.elapsed().as_secs() >= std::env::var("ROBOFORGE_AUTOSAVE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60) {
+            if let Some(p) = crate::settings::autosave_path() {
+                let _ = io::save_project(&p, &self.doc);
+            }
+            self.last_autosave = std::time::Instant::now();
+        }
+        if self.unsaved() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(std::env::var("ROBOFORGE_AUTOSAVE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60) + 1));
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && (self.allow_close || !self.unsaved()) {
+            self.clear_autosave();
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && self.unsaved() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm_discard = Some(PendingAction::Close);
@@ -2934,6 +3244,7 @@ impl eframe::App for App {
         }
         self.shortcuts(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
+        egui::Panel::top("tools").show(ui, |ui| self.tool_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
@@ -2946,6 +3257,13 @@ impl eframe::App for App {
         egui::Panel::right("right").resizable(true).default_size(300.0).show(ui, |ui| self.right_panel(ui));
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| self.viewport(ui));
         self.windows(&ctx);
+        // drop-target hint
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let r = ctx.content_rect();
+            let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop")));
+            p.rect_filled(r, 0.0, Color32::from_black_alpha(140));
+            p.text(r.center(), egui::Align2::CENTER_CENTER, "Drop to open / import", egui::FontId::proportional(28.0), Color32::WHITE);
+        }
         self.commit_if_idle(&ctx);
         let title = format!(
             "{}{} — RoboForge v{}",

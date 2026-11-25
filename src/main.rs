@@ -11,6 +11,7 @@ pub mod scene;
 pub mod shapes;
 pub mod thumbs;
 pub mod theme;
+pub mod settings;
 
 use std::path::PathBuf;
 

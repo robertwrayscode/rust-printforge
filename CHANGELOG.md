@@ -2,6 +2,19 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.2.0 — 2026-11-24
+- **✨ Make it printable:** one click turns each part onto its best face (more flat contact,
+  fewer overhangs), puts everything on the plate, spreads overlapping parts out, flags tall
+  parts that need a brim, then runs the print check.
+- **Overhangs view:** toggle to see in orange every face that will need support.
+- **Colour by height (stripes):** in the Inspector, list heights and filaments
+  ("from 5 mm use red…") and press Apply — the part gets crisp horizontal colour bands.
+- **Drag and drop:** drop STL/OBJ/3MF files or .pforge projects onto the window.
+- **Open recent** in the File menu (projects and imports).
+- **Auto-save and crash recovery:** unsaved work is backed up every minute; if RoboForge
+  closes unexpectedly, it offers to recover the design next time.
+- Toolbar split into two rows so nothing is cut off on smaller screens.
+
 ## 0.1.10 — 2026-11-24
 - **Fixed:** on Windows (and Macs) set to light mode, the menus and side panels stayed light
   while the rest of the app was dark. RoboForge now uses the theme chosen under

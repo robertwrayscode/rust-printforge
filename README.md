@@ -52,10 +52,14 @@ cargo run --release
   flipped faces, removes duplicate faces).
 - Projects save as `.pforge` files.
 
+### Helpers
+- **Make it printable** (best face down, onto the plate, spread out, checked), **Overhangs** view,
+  drag-and-drop files, **Open recent**, auto-save with crash recovery.
+
 ### Colour
 - Up to **24 filaments**, matching the H2C's AMS limit. Set each filament's colour to match
   your spools.
-- Give every object a filament, or **paint** it: a round brush with adjustable radius (the surface refines itself under the brush), a
+- **Colour by height** stripes, and give every object a filament, or **paint** it: a round brush with adjustable radius (the surface refines itself under the brush), a
   **bucket fill** that stops at sharp edges (angle limit), and an eraser.
   **Refine for painting** subdivides a model so the brush can paint fine detail.
 
