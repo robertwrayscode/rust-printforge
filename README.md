@@ -52,6 +52,10 @@ cargo run --release
   flipped faces, removes duplicate faces).
 - Projects save as `.pforge` files.
 
+### Parts library
+Box + lid, bracket, gear, knob, cable clip, threaded bolt and nut, print-in-place hinge,
+snap-fit hook — all parametric.
+
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
 - **Logo from SVG:** multi-colour logos, one filament per SVG colour.

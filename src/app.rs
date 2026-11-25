@@ -431,8 +431,18 @@ impl App {
             x += size.x.max(10.0) + 5.0;
         }
         o.pos = DVec3::new(x, 0.0, 0.0);
+        let is_container = matches!(o.kind, Kind::Shape(Shape::Container { .. }));
+        let (cw, cpos) = (o.size, o.pos);
         self.doc.objects.push(o);
         self.selection = vec![id];
+        if is_container {
+            let lid_id = self.doc.alloc_id();
+            let mut l = Object::new(lid_id, "Lid", Kind::Shape(Shape::Lid { wall: 2.0, lip: 4.0, clearance: 0.25, radius: 4.0 }), DVec3::new(cw.x, cw.y, 6.0));
+            l.pos = cpos + DVec3::new(0.0, cw.y + 8.0, 0.0);
+            l.color = 0;
+            self.doc.objects.push(l);
+            self.selection.push(lid_id);
+        }
         self.touch();
         self.status = format!("Added {}.", info.name);
     }
@@ -1725,8 +1735,14 @@ impl App {
             }
             let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
             let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
-            egui::Grid::new("shapes").num_columns(cols).spacing([4.0, 4.0]).show(ui, |ui| {
-                for (i, info) in LIBRARY.iter().enumerate() {
+            for cat in ["Basic shapes", "Parts"] {
+            if cat != "Basic shapes" {
+                ui.add_space(4.0);
+                ui.label(RichText::new(cat.to_uppercase()).size(10.5).strong().color(crate::theme::header()));
+            }
+            egui::Grid::new(("shapes", cat)).num_columns(cols).spacing([4.0, 4.0]).show(ui, |ui| {
+                let mut k = 0usize;
+                for (i, info) in LIBRARY.iter().enumerate().filter(|(_, x)| x.category == cat) {
                     // one widget that both clicks (add) and drags (drop onto the plate/a part)
                     let (rect, r) = ui.allocate_exact_size(tile, Sense::click_and_drag());
                     let bg = if r.hovered() || r.dragged() { crate::theme::tile_hover() } else { crate::theme::tile_bg() };
@@ -1750,11 +1766,13 @@ impl App {
                             layer.image(self.thumbs[i].id(), Rect::from_center_size(p + Vec2::new(4.0, 4.0), Vec2::splat(44.0)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::from_white_alpha(200));
                         }
                     }
-                    if (i + 1) % cols == 0 {
+                    k += 1;
+                    if k % cols == 0 {
                         ui.end_row();
                     }
                 }
             });
+            }
             ui.add_space(4.0);
             if ui.add_sized([ui.available_width(), 24.0], egui::Button::new("Import STL / OBJ / 3MF…")).clicked() {
                 self.import();
@@ -2063,7 +2081,13 @@ impl App {
         // shape parameters
         if let Kind::Shape(s) = &mut o.kind {
             ui.label(RichText::new(s.label()).strong());
+            let before_params = format!("{s:?}");
             shape_params(ui, s);
+            if format!("{s:?}") != before_params {
+                if let Some(n) = s.natural_size() {
+                    o.size = n;
+                }
+            }
         } else if let Kind::Mesh(m) = &o.kind {
             ui.label(format!("Mesh · {} triangles", m.tris.len()));
         }
@@ -3454,6 +3478,54 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.add(egui::Slider::new(spacing, -0.2..=1.0).text("letter spacing"));
         }
         Shape::Roof | Shape::Wedge | Shape::Heart => {}
+        Shape::Container { wall, floor, radius } => {
+            ui.add(egui::Slider::new(wall, 0.8..=10.0).text("wall (mm)"));
+            ui.add(egui::Slider::new(floor, 0.6..=10.0).text("floor (mm)"));
+            ui.add(egui::Slider::new(radius, 0.0..=20.0).text("corner radius (mm)"));
+            ui.label(RichText::new("Size is the outside of the box. Pair it with a Lid of the same W and D.").small().weak());
+        }
+        Shape::Lid { wall, lip, clearance, radius } => {
+            ui.add(egui::Slider::new(wall, 0.8..=10.0).text("box wall (mm)"));
+            ui.add(egui::Slider::new(lip, 0.0..=15.0).text("lip depth (mm)"));
+            ui.add(egui::Slider::new(clearance, 0.0..=1.0).text("fit clearance (mm)"));
+            ui.add(egui::Slider::new(radius, 0.0..=20.0).text("corner radius (mm)"));
+            ui.label(RichText::new("Prints face-down; flip it onto the box. 0.2–0.3 mm clearance = snug fit.").small().weak());
+        }
+        Shape::Bracket { thickness, hole } => {
+            ui.add(egui::Slider::new(thickness, 1.0..=10.0).text("thickness (mm)"));
+            ui.add(egui::Slider::new(hole, 0.0..=10.0).text("screw hole (mm)"));
+        }
+        Shape::Gear { teeth, bore } => {
+            sides(ui, teeth, 6, 120, "teeth");
+            ui.add(egui::Slider::new(bore, 0.0..=40.0).text("bore (mm)"));
+            ui.label(RichText::new("Gears mesh when they share the same tooth size: keep diameter / (teeth + 2) equal.").small().weak());
+        }
+        Shape::Knob { grips, bore } => {
+            sides(ui, grips, 3, 40, "grips");
+            ui.add(egui::Slider::new(bore, 0.0..=20.0).text("D-shaft hole (mm)"));
+        }
+        Shape::CableClip { cable } => {
+            ui.add(egui::Slider::new(cable, 1.0..=30.0).text("cable diameter (mm)"));
+        }
+        Shape::Bolt { diameter, length } => {
+            ui.add(egui::Slider::new(diameter, 3.0..=20.0).text("M size (mm)"));
+            ui.add(egui::Slider::new(length, 4.0..=120.0).text("thread length (mm)"));
+            ui.label(RichText::new(format!("Coarse pitch {:.2} mm. Prints head-down.", crate::parts::coarse_pitch(*diameter))).small().weak());
+        }
+        Shape::Nut { diameter, clearance } => {
+            ui.add(egui::Slider::new(diameter, 3.0..=20.0).text("M size (mm)"));
+            ui.add(egui::Slider::new(clearance, 0.0..=0.8).text("thread clearance (mm)"));
+            ui.label(RichText::new("Matches a printed Bolt of the same size. 0.2–0.3 mm clearance for PLA.").small().weak());
+        }
+        Shape::Hinge { knuckles, clearance } => {
+            sides(ui, knuckles, 3, 15, "knuckles");
+            ui.add(egui::Slider::new(clearance, 0.15..=1.0).text("gap (mm)"));
+            ui.label(RichText::new("Prints already assembled — print flat, then snap it loose.").small().weak());
+        }
+        Shape::SnapHook { arm, catch } => {
+            ui.add(egui::Slider::new(arm, 0.6..=4.0).text("arm thickness (mm)"));
+            ui.add(egui::Slider::new(catch, 0.3..=4.0).text("catch depth (mm)"));
+        }
     }
 }
 

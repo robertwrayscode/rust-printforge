@@ -2,6 +2,20 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.4.0 — 2026-11-24
+- **Parts library** (new PARTS section in the Shapes panel), all adjustable in the Inspector:
+  - **Box + lid** — open container (wall, floor, corner radius) plus a matching lid with a lip
+    and fit clearance (prints face-down).
+  - **Bracket** — L-bracket with gusset and screw holes.
+  - **Gear** — involute spur gear with any number of teeth and a bore.
+  - **Knob** — grippy knob with a D-shaft hole.
+  - **Cable clip** — sized from the cable diameter, with screw tab.
+  - **Bolt** and **Nut** — metric coarse threads (M3–M20), nut with print clearance and
+    countersunk ends so they actually screw together.
+  - **Hinge** — print-in-place hinge (prints already assembled).
+  - **Snap hook** — cantilever snap-fit with adjustable arm and catch.
+- Print check: very small knife-edge slivers (e.g. thread tips) are now a warning, not an error.
+
 ## 0.3.0 — 2026-11-24
 - **Picture to 3D** (File menu, Shapes panel, or drop a PNG/JPG onto the window):
   - *Lithophane* — thin where the photo is bright, thick where dark; glows when lit from behind.

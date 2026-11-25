@@ -25,6 +25,17 @@ pub enum Shape {
     Star { points: u32, inner: f64 },
     Heart,
     Text { text: String, font: FontChoice, spacing: f64 },
+    // ---- functional parts
+    Container { wall: f64, floor: f64, radius: f64 },
+    Lid { wall: f64, lip: f64, clearance: f64, radius: f64 },
+    Bracket { thickness: f64, hole: f64 },
+    Gear { teeth: u32, bore: f64 },
+    Knob { grips: u32, bore: f64 },
+    CableClip { cable: f64 },
+    Bolt { diameter: f64, length: f64 },
+    Nut { diameter: f64, clearance: f64 },
+    Hinge { knuckles: u32, clearance: f64 },
+    SnapHook { arm: f64, catch: f64 },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -34,33 +45,45 @@ pub enum FontChoice {
 }
 
 pub struct ShapeInfo {
+    pub category: &'static str,
     pub name: &'static str,
     pub shape: fn() -> Shape,
     pub default_size: [f64; 3],
 }
 
 pub const LIBRARY: &[ShapeInfo] = &[
-    ShapeInfo { name: "Box", shape: || Shape::Box { radius: 0.0, steps: 4 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Rounded box", shape: || Shape::Box { radius: 3.0, steps: 4 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Cylinder", shape: || Shape::Cylinder { sides: 48, bevel: 0.0 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Sphere", shape: || Shape::Sphere { steps: 24 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Half sphere", shape: || Shape::HalfSphere { steps: 24 }, default_size: [20.0, 20.0, 10.0] },
-    ShapeInfo { name: "Cone", shape: || Shape::Cone { sides: 48, top: 0.0 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Pyramid", shape: || Shape::Pyramid { sides: 4 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Roof", shape: || Shape::Roof, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Round roof", shape: || Shape::RoundRoof { sides: 32 }, default_size: [20.0, 20.0, 10.0] },
-    ShapeInfo { name: "Wedge", shape: || Shape::Wedge, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Torus", shape: || Shape::Torus { sides: 48, tube: 0.15 }, default_size: [20.0, 20.0, 6.0] },
-    ShapeInfo { name: "Tube", shape: || Shape::Tube { sides: 48, wall: 2.0 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Paraboloid", shape: || Shape::Paraboloid { sides: 48 }, default_size: [20.0, 20.0, 20.0] },
-    ShapeInfo { name: "Polygon", shape: || Shape::Polygon { sides: 6 }, default_size: [20.0, 20.0, 10.0] },
-    ShapeInfo { name: "Star", shape: || Shape::Star { points: 5, inner: 0.45 }, default_size: [20.0, 20.0, 5.0] },
-    ShapeInfo { name: "Heart", shape: || Shape::Heart, default_size: [20.0, 18.0, 5.0] },
+    ShapeInfo { category: "Basic shapes", name: "Box", shape: || Shape::Box { radius: 0.0, steps: 4 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Rounded box", shape: || Shape::Box { radius: 3.0, steps: 4 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Cylinder", shape: || Shape::Cylinder { sides: 48, bevel: 0.0 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Sphere", shape: || Shape::Sphere { steps: 24 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Half sphere", shape: || Shape::HalfSphere { steps: 24 }, default_size: [20.0, 20.0, 10.0] },
+    ShapeInfo { category: "Basic shapes", name: "Cone", shape: || Shape::Cone { sides: 48, top: 0.0 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Pyramid", shape: || Shape::Pyramid { sides: 4 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Roof", shape: || Shape::Roof, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Round roof", shape: || Shape::RoundRoof { sides: 32 }, default_size: [20.0, 20.0, 10.0] },
+    ShapeInfo { category: "Basic shapes", name: "Wedge", shape: || Shape::Wedge, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Torus", shape: || Shape::Torus { sides: 48, tube: 0.15 }, default_size: [20.0, 20.0, 6.0] },
+    ShapeInfo { category: "Basic shapes", name: "Tube", shape: || Shape::Tube { sides: 48, wall: 2.0 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Paraboloid", shape: || Shape::Paraboloid { sides: 48 }, default_size: [20.0, 20.0, 20.0] },
+    ShapeInfo { category: "Basic shapes", name: "Polygon", shape: || Shape::Polygon { sides: 6 }, default_size: [20.0, 20.0, 10.0] },
+    ShapeInfo { category: "Basic shapes", name: "Star", shape: || Shape::Star { points: 5, inner: 0.45 }, default_size: [20.0, 20.0, 5.0] },
+    ShapeInfo { category: "Basic shapes", name: "Heart", shape: || Shape::Heart, default_size: [20.0, 18.0, 5.0] },
     ShapeInfo {
+        category: "Basic shapes",
         name: "Text",
         shape: || Shape::Text { text: "TEXT".into(), font: FontChoice::Sans, spacing: 0.0 },
         default_size: [40.0, 12.0, 4.0],
     },
+    ShapeInfo { category: "Parts", name: "Box + lid", shape: || Shape::Container { wall: 2.0, floor: 2.0, radius: 4.0 }, default_size: [60.0, 40.0, 30.0] },
+    ShapeInfo { category: "Parts", name: "Lid", shape: || Shape::Lid { wall: 2.0, lip: 4.0, clearance: 0.25, radius: 4.0 }, default_size: [60.0, 40.0, 6.0] },
+    ShapeInfo { category: "Parts", name: "Bracket", shape: || Shape::Bracket { thickness: 3.0, hole: 4.2 }, default_size: [30.0, 25.0, 25.0] },
+    ShapeInfo { category: "Parts", name: "Gear", shape: || Shape::Gear { teeth: 20, bore: 5.0 }, default_size: [40.0, 40.0, 6.0] },
+    ShapeInfo { category: "Parts", name: "Knob", shape: || Shape::Knob { grips: 12, bore: 6.0 }, default_size: [30.0, 30.0, 18.0] },
+    ShapeInfo { category: "Parts", name: "Cable clip", shape: || Shape::CableClip { cable: 6.0 }, default_size: [10.0, 23.6, 11.6] },
+    ShapeInfo { category: "Parts", name: "Bolt", shape: || Shape::Bolt { diameter: 8.0, length: 20.0 }, default_size: [15.70393, 13.6, 25.6] },
+    ShapeInfo { category: "Parts", name: "Nut", shape: || Shape::Nut { diameter: 8.0, clearance: 0.25 }, default_size: [15.70393, 13.6, 6.4] },
+    ShapeInfo { category: "Parts", name: "Hinge", shape: || Shape::Hinge { knuckles: 5, clearance: 0.3 }, default_size: [40.0, 30.0, 6.0] },
+    ShapeInfo { category: "Parts", name: "Snap hook", shape: || Shape::SnapHook { arm: 1.4, catch: 1.0 }, default_size: [6.0, 8.0, 15.0] },
 ];
 
 impl Shape {
@@ -83,11 +106,35 @@ impl Shape {
             Shape::Star { .. } => "Star",
             Shape::Heart => "Heart",
             Shape::Text { .. } => "Text",
+            Shape::Container { .. } => "Container",
+            Shape::Lid { .. } => "Lid",
+            Shape::Bracket { .. } => "Bracket",
+            Shape::Gear { .. } => "Gear",
+            Shape::Knob { .. } => "Knob",
+            Shape::CableClip { .. } => "Cable clip",
+            Shape::Bolt { .. } => "Bolt",
+            Shape::Nut { .. } => "Nut",
+            Shape::Hinge { .. } => "Hinge",
+            Shape::SnapHook { .. } => "Snap hook",
+        }
+    }
+
+    /// Parts whose size follows from their settings (threads etc. shouldn't be stretched).
+    pub fn natural_size(&self) -> Option<DVec3> {
+        match self {
+            Shape::Bolt { diameter, length } => Some(crate::parts::bolt_size(*diameter, *length)),
+            Shape::Nut { diameter, .. } => Some(crate::parts::nut_size(*diameter)),
+            Shape::CableClip { cable } => Some(crate::parts::cable_clip_size(*cable)),
+            _ => None,
         }
     }
 
     pub fn generate(&self, size: DVec3) -> Mesh {
         let size = size.max(DVec3::splat(0.01));
+        if let Some(m) = self.generate_part(size) {
+            // centred on X/Y, sitting on z = 0, exactly the requested size
+            return crate::scene::fit_to_size(&m, size);
+        }
         let mut m = match self {
             Shape::Box { radius, steps } => rounded_box(size, *radius, (*steps).clamp(1, 16)),
             Shape::Cylinder { sides, bevel } => {
@@ -207,10 +254,34 @@ impl Shape {
                     unit(extrude(&norm, 0.0, 1.0), size)
                 }
             }
+            _ => rounded_box(size, 0.0, 1),
         };
         m.weld(1e-7);
         orient_outward(&mut m);
         m
+    }
+
+    fn generate_part(&self, size: DVec3) -> Option<Mesh> {
+        use crate::parts::*;
+        Some(match self {
+            Shape::Container { wall, floor, radius } => container(size, *wall, *floor, *radius),
+            Shape::Lid { wall, lip, clearance, radius } => lid(size, *wall, *lip, *clearance, *radius),
+            Shape::Bracket { thickness, hole } => bracket(size, *thickness, *hole),
+            Shape::Gear { teeth, bore } => gear(size, *teeth, *bore),
+            Shape::Knob { grips, bore } => knob(size, *grips, *bore),
+            Shape::CableClip { cable } => cable_clip(size, cable.clamp(1.0, 40.0)),
+            Shape::Bolt { diameter, length } => {
+                let d = diameter.clamp(2.0, 30.0);
+                crate::scene::fit_to_size(&bolt(d, length.clamp(2.0, 300.0), coarse_pitch(d)), size)
+            }
+            Shape::Nut { diameter, clearance } => {
+                let d = diameter.clamp(2.0, 30.0);
+                crate::scene::fit_to_size(&nut(d, coarse_pitch(d), *clearance), size)
+            }
+            Shape::Hinge { knuckles, clearance } => hinge(size, *knuckles, *clearance),
+            Shape::SnapHook { arm, catch } => snap_hook(size, *arm, *catch),
+            _ => return None,
+        })
     }
 
     /// Natural aspect for text so new text objects aren't squashed.
@@ -277,7 +348,7 @@ fn signed_area(p: &[DVec2]) -> f64 {
 }
 
 /// Surface of revolution around Z. `prof` is (radius, z) from the axis back to the axis.
-fn revolve(prof: &[(f64, f64)], sides: u32) -> Mesh {
+pub fn revolve(prof: &[(f64, f64)], sides: u32) -> Mesh {
     let n = sides.clamp(3, 512) as usize;
     let mut m = Mesh::new();
     let rows: Vec<Vec<u32>> = prof
@@ -385,7 +456,7 @@ fn side_profile(p: &[DVec2], size: DVec3) -> Mesh {
     unit(m, size)
 }
 
-fn rounded_box(size: DVec3, radius: f64, steps: u32) -> Mesh {
+pub fn rounded_box(size: DVec3, radius: f64, steps: u32) -> Mesh {
     let h = size * 0.5;
     let r = radius.clamp(0.0, h.min_element() * 0.999);
     let coords = |half: f64| -> Vec<f64> {

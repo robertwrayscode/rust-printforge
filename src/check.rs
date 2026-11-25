@@ -412,7 +412,10 @@ fn check_object(id: u64, name: &str, m: &Mesh, input: &CheckInput, resting_on: O
         // ---- wall thickness
         if watertight {
             let (thin, too_thin, thin_a, too_thin_a, min_t) = thickness(m, &bvh, p.nozzle);
-            if too_thin_a > 0.5 {
+            if too_thin_a > 0.5 && too_thin_a < 3.0 {
+                push(&mut r, Severity::Warning, o, "Tiny thin slivers",
+                    format!("A small area ({too_thin_a:.1} mm²) of '{name}' is thinner than the {} mm nozzle (e.g. the very tip of a thread or a sharp edge). The slicer will just skip it.", p.nozzle), too_thin.clone());
+            } else if too_thin_a >= 3.0 {
                 push(&mut r, Severity::Error, o, "Walls too thin to print",
                     format!("Parts of '{name}' are only ~{min_t:.2} mm thick — thinner than the {} mm nozzle, so they'll be missing from the print. Make them at least {:.1} mm.", p.nozzle, p.nozzle * 2.0), too_thin);
             }
