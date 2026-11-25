@@ -60,6 +60,8 @@ pub enum Shape {
     KeyTag { hole: f64 },
     Jar { wall: f64 },
     JarCap { clearance: f64 },
+    /// Drawn outline (mm), extruded up or spun round the Y axis.
+    Sketch { pts: Vec<[f64; 2]>, round: Vec<bool>, spin: bool, height: f64, sides: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -188,6 +190,8 @@ impl Shape {
             Shape::KeyTag { .. } => "Key tag",
             Shape::Jar { .. } => "Screw jar",
             Shape::JarCap { .. } => "Jar cap",
+            Shape::Sketch { spin: true, .. } => "Sketch (spun)",
+            Shape::Sketch { .. } => "Sketch",
         }
     }
 
@@ -198,6 +202,7 @@ impl Shape {
             Shape::Nut { diameter, .. } => Some(crate::parts::nut_size(*diameter)),
             Shape::CableClip { cable } => Some(crate::parts::cable_clip_size(*cable)),
             Shape::PipeClamp { pipe } => Some(crate::parts::pipe_clamp_size(*pipe)),
+            Shape::Sketch { pts, round, spin, height, .. } => Some(crate::sketch::natural_size(pts, round, *spin, *height)),
             _ => None,
         }
     }
@@ -377,6 +382,7 @@ impl Shape {
             Shape::KeyTag { hole } => key_tag(size, *hole),
             Shape::Jar { wall } => jar(size, *wall),
             Shape::JarCap { clearance } => jar_cap(size, *clearance),
+            Shape::Sketch { pts, round, spin, height, sides } => crate::sketch::build(pts, round, *spin, *height, *sides),
             _ => return None,
         })
     }

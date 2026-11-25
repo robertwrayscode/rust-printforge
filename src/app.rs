@@ -230,6 +230,7 @@ pub struct App {
     file: Option<PathBuf>,
     opened_at_start: bool,
     img_dialog: Option<ImgDialog>,
+    sketch: Option<crate::sketch::SketchEditor>,
     decal: Option<crate::decal::Decal>,
     decal_tex: Option<egui::TextureHandle>,
     svg_dialog: Option<SvgDialog>,
@@ -309,6 +310,7 @@ impl App {
             file,
             opened_at_start: false,
             img_dialog: None,
+            sketch: None,
             decal: None,
             decal_tex: None,
             svg_dialog: None,
@@ -428,17 +430,7 @@ impl App {
         let id = self.doc.alloc_id();
         let mut o = Object::new(id, info.name, Kind::Shape(shape), size);
         o.color = (self.doc.objects.len() % self.doc.filaments.len().max(1)) as u8;
-        // place next to existing objects, Tinkercad-style
-        let mut x = 0.0;
-        let used: Vec<Aabb> = self.doc.objects.clone().iter().map(|o| self.cache.world_mesh(o).bounds()).collect();
-        for _ in 0..40 {
-            let b = Aabb { min: DVec3::new(x - size.x / 2.0, -size.y / 2.0, 0.0), max: DVec3::new(x + size.x / 2.0, size.y / 2.0, size.z) };
-            if !used.iter().any(|u| u.overlaps(&b, -1.0)) {
-                break;
-            }
-            x += size.x.max(10.0) + 5.0;
-        }
-        o.pos = DVec3::new(x, 0.0, 0.0);
+        o.pos = self.free_spot(size);
         let is_container = matches!(o.kind, Kind::Shape(Shape::Container { .. }));
         let is_jar = matches!(o.kind, Kind::Shape(Shape::Jar { .. }));
         let (cw, cpos) = (o.size, o.pos);
@@ -1055,6 +1047,20 @@ impl App {
         }
     }
 
+    /// Somewhere on the plate next to existing objects, Tinkercad-style.
+    fn free_spot(&mut self, size: DVec3) -> DVec3 {
+        let mut x = 0.0;
+        let used: Vec<Aabb> = self.doc.objects.clone().iter().map(|o| self.cache.world_mesh(o).bounds()).collect();
+        for _ in 0..40 {
+            let b = Aabb { min: DVec3::new(x - size.x / 2.0, -size.y / 2.0, 0.0), max: DVec3::new(x + size.x / 2.0, size.y / 2.0, size.z) };
+            if !used.iter().any(|u| u.overlaps(&b, -1.0)) {
+                break;
+            }
+            x += size.x.max(10.0) + 5.0;
+        }
+        DVec3::new(x, 0.0, 0.0)
+    }
+
     fn place_new_mesh(&mut self, name: &str, mesh: Mesh) -> u64 {
         let (m, size, _off) = normalize_mesh(mesh);
         let id = self.doc.alloc_id();
@@ -1064,6 +1070,7 @@ impl App {
     }
 
     fn picture_windows(&mut self, ctx: &egui::Context) {
+        self.sketch_window(ctx);
         use crate::imaging::ImageMode;
         let mut close_img = false;
         let mut create_img = None;
@@ -1573,6 +1580,35 @@ impl App {
         }
     }
 
+    fn sketch_window(&mut self, ctx: &egui::Context) {
+        let Some(ed) = &mut self.sketch else { return };
+        match ed.show(ctx) {
+            crate::sketch::SketchResult::None => {}
+            crate::sketch::SketchResult::Cancel => self.sketch = None,
+            crate::sketch::SketchResult::Done(shape) => {
+                let editing = ed.editing;
+                self.sketch = None;
+                let size = shape.natural_size().unwrap_or(DVec3::splat(20.0));
+                if let Some(o) = editing.and_then(|id| self.doc.find_mut(id)) {
+                    o.kind = Kind::Shape(shape);
+                    o.size = size;
+                    self.selection = vec![o.id];
+                    self.status = "Sketch updated.".into();
+                } else {
+                    let id = self.doc.alloc_id();
+                    let name = shape.label().to_string();
+                    let mut o = Object::new(id, &name, Kind::Shape(shape), size);
+                    o.color = self.doc.objects.len() as u8 % self.doc.filaments.len().max(1) as u8;
+                    o.pos = self.free_spot(size);
+                    self.doc.objects.push(o);
+                    self.selection = vec![id];
+                    self.status = "Sketch added. Resize it like any part, or click Edit sketch… in the Inspector.".into();
+                }
+                self.touch();
+            }
+        }
+    }
+
     fn paint_at(&mut self, hit: &Hit, fill: bool) {
         let id = self.entries[hit.entry].id;
         let Some(o) = self.doc.find(id).cloned() else { return };
@@ -1711,6 +1747,10 @@ impl App {
                     }
                     ui.close();
                 }
+                if ui.button("Sketch a shape…").clicked() {
+                    self.sketch = Some(crate::sketch::SketchEditor::new());
+                    ui.close();
+                }
                 if ui.button("Picture onto a part's surface…").clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
                         self.open_image(p);
@@ -1845,6 +1885,9 @@ impl App {
             ui.selectable_value(&mut tool, Tool::SnapFaces, "Snap faces");
             ui.selectable_value(&mut tool, Tool::PushPull, "Push/Pull");
             ui.selectable_value(&mut tool, Tool::Measure, "Measure");
+            if ui.button("✏ Sketch").on_hover_text("Draw your own outline, then push it up or spin it into a 3D part").clicked() {
+                self.sketch = Some(crate::sketch::SketchEditor::new());
+            }
             if tool != self.tool {
                 self.tool = tool;
                 self.measure.clear();
@@ -1944,6 +1987,9 @@ impl App {
                     }
                 }
             });
+            if ui.add_sized([ui.available_width(), 28.0], egui::Button::new(RichText::new("✏ Sketch a shape…").strong())).on_hover_text("Draw your own outline, then push it up or spin it into a 3D part").clicked() {
+                self.sketch = Some(crate::sketch::SketchEditor::new());
+            }
             if ui.add_sized([ui.available_width(), 24.0], egui::Button::new("Picture onto a part…")).on_hover_text("Paint a photo or logo onto a part's surface in filament colours").clicked() {
                 if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
                     self.open_image(p);
@@ -2204,6 +2250,7 @@ impl App {
         }
         let id = sel[0];
         let Some(mut o) = self.doc.find(id).cloned() else { return };
+        let mut open_sketch = None;
         let before = format!("{:?}", (&o.name, &o.kind_debug(), o.size, o.pos, o.rot, o.hole, o.color, &o.mirror));
         ui.horizontal(|ui| {
             crate::theme::section(ui, "Inspector");
@@ -2246,6 +2293,9 @@ impl App {
             ui.label(RichText::new(s.label()).strong());
             let before_params = format!("{s:?}");
             shape_params(ui, s);
+            if matches!(s, Shape::Sketch { .. }) && ui.button("✏ Edit sketch…").clicked() {
+                open_sketch = crate::sketch::SketchEditor::from_shape(s, o.id);
+            }
             if format!("{s:?}") != before_params {
                 if let Some(n) = s.natural_size() {
                     o.size = n;
@@ -2253,6 +2303,9 @@ impl App {
             }
         } else if let Kind::Mesh(m) = &o.kind {
             ui.label(format!("Mesh · {} triangles", m.tris.len()));
+        }
+        if open_sketch.is_some() {
+            self.sketch = open_sketch;
         }
         ui.separator();
         ui.label(RichText::new("Size (mm)").strong());
@@ -3785,6 +3838,13 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.add(egui::Slider::new(clearance, 0.1..=1.0).text("thread clearance (mm)"));
         }
         Shape::PegHook | Shape::KeyholePlate | Shape::Saucer => {}
+        Shape::Sketch { spin, height, sides: n, .. } => {
+            if *spin {
+                sides(ui, n, 8, 256, "smoothness");
+            } else {
+                ui.add(egui::Slider::new(height, 0.2..=300.0).text("height (mm)"));
+            }
+        }
     }
 }
 

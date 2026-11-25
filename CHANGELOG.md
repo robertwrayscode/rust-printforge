@@ -2,6 +2,18 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.5.0 — 2026-11-25
+- **Sketch tool** (✏ Sketch on the toolbar, File menu, or the Shapes panel): draw your own outline
+  on a millimetre grid, then
+  - **Extrude**: push it straight up to a height, or
+  - **Spin**: spin a half side-view round an axis (vases, knobs, bottles, rings).
+  - Click to add points, click on a line to insert one, drag to move, right-click to delete,
+    double-click a point to round that corner. Grid snap, zoom/pan, undo, live size readout.
+  - Warns in plain English if lines cross or a spin outline is on the wrong side of the axis.
+  - Starters: square, rounded square, arrow, vase profile.
+- Sketched parts stay editable: select one and click **Edit sketch…** in the Inspector.
+  They resize, colour, paint and group like any other part.
+
 ## 0.4.2 — 2026-11-24
 - **Picture onto a part** (File menu, the Shapes panel, or "On a part's surface" in the
   Picture dialog): paints a photo or logo onto a part's surface in your filament colours.

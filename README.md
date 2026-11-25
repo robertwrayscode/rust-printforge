@@ -64,6 +64,7 @@ own settings in the Inspector:
 
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
+- **Sketch tool:** draw an outline on a grid, then extrude it up or spin it into a vase, knob or ring.
 - **Picture onto a part:** paint a photo or logo onto any part's surface in filament colours.
 - **Logo from SVG:** multi-colour logos, one filament per SVG colour.
 
