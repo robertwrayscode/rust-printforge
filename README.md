@@ -53,8 +53,14 @@ cargo run --release
 - Projects save as `.pforge` files.
 
 ### Parts library
-Box + lid, bracket, gear, knob, cable clip, threaded bolt and nut, print-in-place hinge,
-snap-fit hook — all parametric.
+34 ready-made parts in three groups, all resizable (W/D/H or the side handles) with their
+own settings in the Inspector:
+- **Hardware:** gear, gear rack, bolt, nut, washer, standoff, print-in-place hinge, living hinge,
+  snap hook, sliding dovetail, pulley, wheel, spring.
+- **Mounting:** bracket, corner brace, wall hook, pegboard hook, pipe clamp, cable clip, cable comb,
+  keyhole plate, desk grommet.
+- **Home & storage:** box + lid, divided bin, screw-top jar + cap, planter + saucer, funnel, knob,
+  drawer handle, phone stand, key tag.
 
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.

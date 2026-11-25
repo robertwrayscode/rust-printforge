@@ -432,6 +432,7 @@ impl App {
         }
         o.pos = DVec3::new(x, 0.0, 0.0);
         let is_container = matches!(o.kind, Kind::Shape(Shape::Container { .. }));
+        let is_jar = matches!(o.kind, Kind::Shape(Shape::Jar { .. }));
         let (cw, cpos) = (o.size, o.pos);
         self.doc.objects.push(o);
         self.selection = vec![id];
@@ -442,6 +443,15 @@ impl App {
             l.color = 0;
             self.doc.objects.push(l);
             self.selection.push(lid_id);
+        }
+        if is_jar {
+            let cap_id = self.doc.alloc_id();
+            let cs = crate::parts::jar_cap_size(cw.x, cw.z);
+            let mut c = Object::new(cap_id, "Jar cap", Kind::Shape(Shape::JarCap { clearance: 0.4 }), cs);
+            c.pos = cpos + DVec3::new(cw.x / 2.0 + cs.x / 2.0 + 8.0, 0.0, 0.0);
+            c.color = 0;
+            self.doc.objects.push(c);
+            self.selection.push(cap_id);
         }
         self.touch();
         self.status = format!("Added {}.", info.name);
@@ -1735,7 +1745,7 @@ impl App {
             }
             let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
             let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
-            for cat in ["Basic shapes", "Parts"] {
+            for cat in ["Basic shapes", "Hardware", "Mounting", "Home & storage"] {
             if cat != "Basic shapes" {
                 ui.add_space(4.0);
                 ui.label(RichText::new(cat.to_uppercase()).size(10.5).strong().color(crate::theme::header()));
@@ -3526,6 +3536,75 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.add(egui::Slider::new(arm, 0.6..=4.0).text("arm thickness (mm)"));
             ui.add(egui::Slider::new(catch, 0.3..=4.0).text("catch depth (mm)"));
         }
+        Shape::Washer { hole } | Shape::Standoff { hole } => {
+            ui.add(egui::Slider::new(hole, 0.5..=60.0).text("hole (mm)"));
+        }
+        Shape::Pulley { bore, groove } => {
+            ui.add(egui::Slider::new(bore, 1.0..=40.0).text("bore (mm)"));
+            ui.add(egui::Slider::new(groove, 0.5..=15.0).text("groove depth (mm)"));
+        }
+        Shape::Wheel { bore, spokes } => {
+            ui.add(egui::Slider::new(bore, 1.0..=40.0).text("bore (mm)"));
+            sides(ui, spokes, 3, 16, "spokes");
+        }
+        Shape::Spring { coils, wire } => {
+            ui.add(egui::Slider::new(coils, 1.0..=30.0).text("coils"));
+            ui.add(egui::Slider::new(wire, 0.8..=8.0).text("wire thickness (mm)"));
+            ui.label(RichText::new("Print standing up. PETG or TPU springs back best.").small().weak());
+        }
+        Shape::Rack { module } => {
+            ui.add(egui::Slider::new(module, 0.5..=5.0).text("tooth size (module)"));
+            ui.label(RichText::new("Meshes with a Gear whose diameter / (teeth + 2) equals this number.").small().weak());
+        }
+        Shape::Dovetail { clearance } => {
+            ui.add(egui::Slider::new(clearance, 0.05..=1.0).text("fit clearance (mm)"));
+            ui.label(RichText::new("Two pieces that slide together.").small().weak());
+        }
+        Shape::LivingHinge { film, gap } => {
+            ui.add(egui::Slider::new(film, 0.3..=1.5).text("hinge film (mm)"));
+            ui.add(egui::Slider::new(gap, 1.0..=20.0).text("gap (mm)"));
+            ui.label(RichText::new("Flexes best in PETG or PP.").small().weak());
+        }
+        Shape::WallHook { hole } | Shape::CornerBrace { hole } | Shape::Handle { hole } => {
+            ui.add(egui::Slider::new(hole, 0.0..=10.0).text("screw hole (mm)"));
+        }
+        Shape::PipeClamp { pipe } => {
+            ui.add(egui::Slider::new(pipe, 3.0..=80.0).text("pipe diameter (mm)"));
+        }
+        Shape::CableComb { slots, cable } => {
+            sides(ui, slots, 1, 30, "slots");
+            ui.add(egui::Slider::new(cable, 1.0..=20.0).text("cable diameter (mm)"));
+        }
+        Shape::Grommet { hole } => {
+            ui.add(egui::Slider::new(hole, 5.0..=120.0).text("hole (mm)"));
+        }
+        Shape::PhoneStand { angle } => {
+            ui.add(egui::Slider::new(angle, 45.0..=85.0).text("lean angle (°)"));
+        }
+        Shape::DividedBin { cols, rows, wall } => {
+            sides(ui, cols, 1, 12, "columns");
+            sides(ui, rows, 1, 12, "rows");
+            ui.add(egui::Slider::new(wall, 0.8..=5.0).text("wall (mm)"));
+        }
+        Shape::Planter { wall, hole } => {
+            ui.add(egui::Slider::new(wall, 1.0..=6.0).text("wall (mm)"));
+            ui.add(egui::Slider::new(hole, 0.0..=30.0).text("drain hole (mm)"));
+        }
+        Shape::Funnel { spout } => {
+            ui.add(egui::Slider::new(spout, 3.0..=40.0).text("spout (mm)"));
+        }
+        Shape::KeyTag { hole } => {
+            ui.add(egui::Slider::new(hole, 1.0..=10.0).text("ring hole (mm)"));
+            ui.label(RichText::new("Add Text on top and Group for a name tag.").small().weak());
+        }
+        Shape::Jar { wall } => {
+            ui.add(egui::Slider::new(wall, 1.2..=4.0).text("wall (mm)"));
+            ui.label(RichText::new("Pair with a Jar cap that is 5 mm wider than the jar.").small().weak());
+        }
+        Shape::JarCap { clearance } => {
+            ui.add(egui::Slider::new(clearance, 0.1..=1.0).text("thread clearance (mm)"));
+        }
+        Shape::PegHook | Shape::KeyholePlate | Shape::Saucer => {}
     }
 }
 

@@ -512,3 +512,513 @@ mod tests {
         assert!(inner_min > 8.0 / 2.0 - 0.54 * 1.25 + 0.2, "inner radius {inner_min}");
     }
 }
+
+// ================================================================ more parts
+
+use crate::shapes::revolve_loop;
+
+fn rev(prof: &[(f64, f64)], sides: u32) -> Mesh {
+    let mut m = revolve(prof, sides);
+    m.weld(1e-9);
+    orient_outward(&mut m);
+    m
+}
+
+fn rev_loop(prof: &[(f64, f64)], sides: u32) -> Mesh {
+    let mut m = revolve_loop(prof, sides);
+    m.weld(1e-9);
+    orient_outward(&mut m);
+    m
+}
+
+/// Profile drawn in the Y/Z plane, extruded along X from -w/2 to w/2.
+fn yz_extrude(groups: Vec<Vec<DVec2>>, w: f64) -> Mesh {
+    let mut m = extrude(&[groups], -w / 2.0, w / 2.0);
+    for v in &mut m.verts {
+        *v = DVec3::new(v.z, v.x, v.y);
+    }
+    solid(m)
+}
+
+/// Profile drawn in the X/Z plane, extruded along Y from -d/2 to d/2.
+fn xz_extrude(groups: Vec<Vec<DVec2>>, d: f64) -> Mesh {
+    let mut m = extrude(&[groups], -d / 2.0, d / 2.0);
+    for v in &mut m.verts {
+        *v = DVec3::new(v.x, v.z, v.y);
+    }
+    solid(m)
+}
+
+fn arc(cx: f64, cy: f64, r: f64, a0: f64, a1: f64, n: usize) -> Vec<DVec2> {
+    (0..=n).map(|i| DVec2::new(cx, cy) + DVec2::from_angle(a0 + (a1 - a0) * i as f64 / n as f64) * r).collect()
+}
+
+// ---- hardware
+
+pub fn washer(size: DVec3, hole: f64) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let h = (hole / 2.0).clamp(0.2, r - 0.6);
+    solid(extrude(&[vec![circle(r, 64), circle(h, 48)]], 0.0, size.z))
+}
+
+pub fn standoff(size: DVec3, hole: f64) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let h = (hole / 2.0).clamp(0.2, r - 0.6);
+    solid(extrude(&[vec![hexagon(r * 2.0 * (PI / 6.0).cos()), circle(h, 32)]], 0.0, size.z))
+}
+
+pub fn pulley(size: DVec3, bore: f64, groove: f64) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let b = (bore / 2.0).clamp(0.5, r * 0.6);
+    let h = size.z;
+    let g = groove.clamp(0.5, (r - b) * 0.7);
+    let f = (h * 0.15).max(0.8);
+    rev_loop(&[(b, 0.0), (r, 0.0), (r, f), (r - g, h / 2.0), (r, h - f), (r, h), (b, h)], 72)
+}
+
+pub fn wheel(size: DVec3, bore: f64, spokes: u32) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let rim = (r * 0.14).max(2.0);
+    let hub_r = (r * 0.25).max(bore / 2.0 + 2.0);
+    let h = size.z;
+    let tire = solid(extrude(&[vec![circle(r, 96), circle(r - rim, 96)]], 0.0, h));
+    let hub = cyl_z(0.0, 0.0, hub_r, 0.0, h, 48);
+    let mut parts = vec![tire, hub];
+    let n = spokes.clamp(3, 16);
+    let sw = (r * 0.12).max(2.0);
+    for i in 0..n {
+        let a = TAU * i as f64 / n as f64;
+        let mut s = cube(DVec3::new(0.0, -sw / 2.0, 0.0), DVec3::new(r - rim * 0.5, sw / 2.0, h * 0.6));
+        for v in &mut s.verts {
+            let p = DVec2::new(v.x, v.y).rotate(DVec2::from_angle(a));
+            v.x = p.x;
+            v.y = p.y;
+        }
+        parts.push(s);
+    }
+    let w = union(parts);
+    cut(w, vec![cyl_z(0.0, 0.0, (bore / 2.0).max(0.5), -1.0, h + 1.0, 32)])
+}
+
+/// Compression spring: round wire swept along a helix, flat-ish ends.
+pub fn spring(size: DVec3, coils: f64, wire: f64) -> Mesh {
+    let wr = (wire / 2.0).clamp(0.4, size.x.min(size.y) / 6.0);
+    let rh = size.x.min(size.y) / 2.0 - wr;
+    let coils = coils.clamp(1.0, 40.0);
+    let pitch = ((size.z - 2.0 * wr) / coils).max(2.0 * wr + 0.4);
+    let turns_steps = (coils * 48.0) as usize;
+    let ring = 12usize;
+    let mut m = Mesh::new();
+    let mut rows: Vec<Vec<u32>> = Vec::new();
+    for k in 0..=turns_steps {
+        let a = TAU * coils * k as f64 / turns_steps as f64;
+        let z = wr + pitch * coils * k as f64 / turns_steps as f64;
+        let centre = DVec3::new(a.cos() * rh, a.sin() * rh, z);
+        let radial = DVec3::new(a.cos(), a.sin(), 0.0);
+        let tangent = DVec3::new(-a.sin() * rh * TAU, a.cos() * rh * TAU, pitch).normalize();
+        let up = tangent.cross(radial).normalize();
+        let row: Vec<u32> = (0..ring)
+            .map(|j| {
+                let t = TAU * j as f64 / ring as f64;
+                m.add_vert(centre + (radial * t.cos() + up * t.sin()) * wr)
+            })
+            .collect();
+        rows.push(row);
+    }
+    for k in 0..turns_steps {
+        for j in 0..ring {
+            let j2 = (j + 1) % ring;
+            m.add_quad(rows[k][j], rows[k][j2], rows[k + 1][j2], rows[k + 1][j]);
+        }
+    }
+    let first = rows[0].clone();
+    let last = rows[turns_steps].clone();
+    let c0 = m.add_vert(first.iter().map(|&i| m.verts[i as usize]).sum::<DVec3>() / ring as f64);
+    let c1 = m.add_vert(last.iter().map(|&i| m.verts[i as usize]).sum::<DVec3>() / ring as f64);
+    for j in 0..ring {
+        let j2 = (j + 1) % ring;
+        m.add_tri(c0, first[j2], first[j]);
+        m.add_tri(c1, last[j], last[j2]);
+    }
+    let m = solid(m);
+    let b = m.bounds();
+    // ground ends: flat top and bottom like a real compression spring
+    let g = wr * 0.7;
+    let big = size.x.max(size.y) * 2.0;
+    let m = cut(
+        m,
+        vec![
+            cube(DVec3::new(-big, -big, b.min.z - 5.0), DVec3::new(big, big, b.min.z + g)),
+            cube(DVec3::new(-big, -big, b.max.z - g), DVec3::new(big, big, b.max.z + 5.0)),
+        ],
+    );
+    let b = m.bounds();
+    moved(m, DVec3::new(0.0, 0.0, -b.min.z))
+}
+
+/// Straight gear rack whose teeth mesh with a Gear of the same tooth size (module).
+pub fn rack(size: DVec3, module: f64) -> Mesh {
+    let m = module.clamp(0.5, 5.0);
+    let p = PI * m;
+    let add = m;
+    let ded = 1.25 * m;
+    let base = (size.z - add - ded).max(1.5);
+    let tan = 20f64.to_radians().tan();
+    let mut pts = vec![DVec2::new(-size.x / 2.0, 0.0), DVec2::new(size.x / 2.0, 0.0)];
+    let pitch_line = base + ded;
+    let n = (size.x / p).floor() as i32;
+    let start = -(n as f64) * p / 2.0;
+    let mut top = Vec::new();
+    for i in 0..n {
+        let c = start + p * (i as f64 + 0.5);
+        let half_pitch_w = p / 4.0;
+        let tip = half_pitch_w - add * tan;
+        let root = half_pitch_w + ded * tan;
+        top.push(DVec2::new(c - root, base));
+        top.push(DVec2::new(c - tip, pitch_line + add));
+        top.push(DVec2::new(c + tip, pitch_line + add));
+        top.push(DVec2::new(c + root, base));
+    }
+    pts.push(DVec2::new(size.x / 2.0, base));
+    for q in top.into_iter().rev() {
+        if q.x > -size.x / 2.0 && q.x < size.x / 2.0 {
+            pts.push(q);
+        }
+    }
+    pts.push(DVec2::new(-size.x / 2.0, base));
+    pts.dedup_by(|a, b| a.distance(*b) < 1e-7);
+    xz_extrude(vec![pts], size.y)
+}
+
+/// Two-piece sliding dovetail (male and female side by side).
+pub fn dovetail(size: DVec3, clearance: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let piece_w = (w - 4.0) / 2.0;
+    let tw = (d * 0.35).max(4.0); // tenon neck width
+    let flare = tw * 0.3;
+    let depth = (piece_w * 0.4).max(3.0);
+    let c = clearance.clamp(0.05, 1.0);
+    // profile in X/Y, extruded along Z (full height)
+    let tenon = |extra: f64, x0: f64| -> Vec<DVec2> {
+        vec![
+            DVec2::new(x0, -tw / 2.0 - extra),
+            DVec2::new(x0 + depth + extra, -tw / 2.0 - flare - extra),
+            DVec2::new(x0 + depth + extra, tw / 2.0 + flare + extra),
+            DVec2::new(x0, tw / 2.0 + extra),
+        ]
+    };
+    let left_x0 = -w / 2.0;
+    let male_body = cube(DVec3::new(left_x0, -d / 2.0, 0.0), DVec3::new(left_x0 + piece_w - depth, d / 2.0, h));
+    let male_tenon = solid(extrude(&[vec![tenon(0.0, left_x0 + piece_w - depth - 0.01)]], 0.0, h));
+    let male = union(vec![male_body, male_tenon]);
+    let rx0 = w / 2.0 - piece_w;
+    let female_body = cube(DVec3::new(rx0, -d / 2.0, 0.0), DVec3::new(w / 2.0, d / 2.0, h));
+    let socket = solid(extrude(&[vec![tenon(c, rx0 - 0.5)]], -1.0, h + 1.0));
+    let mut out = male;
+    out.append(&cut(female_body, vec![socket]));
+    out
+}
+
+pub fn living_hinge(size: DVec3, film: f64, gap: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let g = gap.clamp(1.0, w * 0.5);
+    let f = film.clamp(0.3, h);
+    let pw = (w - g) / 2.0;
+    union(vec![
+        cube(DVec3::new(-w / 2.0, -d / 2.0, 0.0), DVec3::new(-w / 2.0 + pw + 0.01, d / 2.0, h)),
+        cube(DVec3::new(w / 2.0 - pw - 0.01, -d / 2.0, 0.0), DVec3::new(w / 2.0, d / 2.0, h)),
+        cube(DVec3::new(-g / 2.0 - 0.5, -d / 2.0, 0.0), DVec3::new(g / 2.0 + 0.5, d / 2.0, f)),
+    ])
+}
+
+// ---- mounting
+
+pub fn wall_hook(size: DVec3, hole: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let t = (d * 0.15).clamp(2.0, 5.0);
+    // J profile in Y/Z: back plate at y = -d/2, curl at the bottom reaching forward and up
+    let r_out = (d - t) / 2.0 + t / 2.0;
+    let cy = -d / 2.0 + r_out;
+    let cz = r_out;
+    let mut outer = vec![DVec2::new(-d / 2.0, h)];
+    outer.extend(arc(cy, cz, r_out, PI, 2.0 * PI, 24));
+    outer.push(DVec2::new(cy + r_out, cz + h * 0.25));
+    outer.push(DVec2::new(cy + r_out - t, cz + h * 0.25));
+    let mut inner = arc(cy, cz, r_out - t, 2.0 * PI, PI, 24);
+    inner.push(DVec2::new(-d / 2.0 + t, h));
+    outer.extend(inner);
+    let body = yz_extrude(vec![outer], w);
+    let r = (hole / 2.0).max(0.5);
+    let holes = vec![
+        // flat foot under the curl so it stands on the plate
+        cube(DVec3::new(-w, -d, -5.0), DVec3::new(w, d, 1.0)),
+        cyl_y(0.0, h * 0.82, r, -d / 2.0 - 1.0, -d / 2.0 + t + 1.0, 24),
+        cyl_y(0.0, h * 0.55, r, -d / 2.0 - 1.0, -d / 2.0 + t + 1.0, 24),
+    ];
+    cut(body, holes)
+}
+
+/// Hook for 1/4" pegboard (pegs 25.4 mm apart).
+pub fn peg_hook(size: DVec3) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let plate_t = 3.0;
+    let plate = cube(DVec3::new(-w / 2.0, -plate_t, 0.0), DVec3::new(w / 2.0, 0.0, h));
+    let peg_r = 2.6;
+    let top_peg_z = h - 4.0;
+    // upper peg goes back then hooks down, lower peg straight
+    let up1 = cyl_y(0.0, top_peg_z, peg_r, -plate_t - 6.0, -plate_t + 0.5, 24);
+    let up2 = cyl_z(0.0, -plate_t - 6.0 + peg_r, peg_r, top_peg_z - 6.0, top_peg_z + 0.01, 24);
+    let low = cyl_y(0.0, (top_peg_z - 25.4).max(4.0), peg_r, -plate_t - 6.0, -plate_t + 0.5, 24);
+    // forward arm, angled up at the tip
+    let arm_r = 2.5;
+    let arm_z = 6.0;
+    let arm = cyl_y(0.0, arm_z, arm_r, -0.5, d - 8.0, 24);
+    let tip = cyl_z(0.0, d - 8.0 - arm_r, arm_r, arm_z, arm_z + 8.0, 24);
+    let m = union(vec![plate, up1, up2, low, arm, tip]);
+    let b = m.bounds();
+    moved(m, DVec3::new(0.0, -b.center().y, -b.min.z))
+}
+
+/// Saddle clamp that holds a pipe or rod against a surface.
+pub fn pipe_clamp(size: DVec3, pipe: f64) -> Mesh {
+    let w = size.x;
+    let r_in = pipe / 2.0;
+    let t = 2.5;
+    let r_out = r_in + t;
+    let tab = 9.0;
+    let mut outer = vec![DVec2::new(-r_out - tab, 0.0), DVec2::new(-r_in, 0.0)];
+    outer.extend(arc(0.0, 0.0, r_in, PI, 0.0, 32));
+    outer.push(DVec2::new(r_out + tab, 0.0));
+    outer.push(DVec2::new(r_out + tab, t));
+    outer.push(DVec2::new(r_out, t));
+    outer.extend(arc(0.0, 0.0, r_out, (t / r_out).asin(), PI - (t / r_out).asin(), 32));
+    outer.push(DVec2::new(-r_out - tab, t));
+    let body = yz_extrude(vec![outer], w);
+    let holes = vec![cyl_z(0.0, -r_out - tab / 2.0, 1.8, -1.0, t + 1.0, 24), cyl_z(0.0, r_out + tab / 2.0, 1.8, -1.0, t + 1.0, 24)];
+    cut(body, holes)
+}
+
+pub fn pipe_clamp_size(pipe: f64) -> DVec3 {
+    let r_out = pipe / 2.0 + 2.5;
+    DVec3::new(12.0, 2.0 * (r_out + 9.0), r_out)
+}
+
+/// Flat triangular corner brace with three screw holes.
+pub fn corner_brace(size: DVec3, hole: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let cut_r = w.min(d) * 0.35;
+    let tri = vec![
+        DVec2::new(-w / 2.0, -d / 2.0),
+        DVec2::new(w / 2.0, -d / 2.0),
+        DVec2::new(w / 2.0, -d / 2.0 + (d * 0.3)),
+        DVec2::new(-w / 2.0 + (w * 0.3), d / 2.0),
+        DVec2::new(-w / 2.0, d / 2.0),
+    ];
+    let _ = cut_r;
+    let body = solid(extrude(&[vec![tri]], 0.0, h));
+    let r = (hole / 2.0).max(0.5);
+    let ins = 6.0;
+    cut(
+        body,
+        vec![
+            cyl_z(-w / 2.0 + ins, -d / 2.0 + ins, r, -1.0, h + 1.0, 24),
+            cyl_z(w / 2.0 - ins, -d / 2.0 + ins, r, -1.0, h + 1.0, 24),
+            cyl_z(-w / 2.0 + ins, d / 2.0 - ins, r, -1.0, h + 1.0, 24),
+        ],
+    )
+}
+
+/// Plate with two keyhole slots for hanging on screw heads.
+pub fn keyhole_plate(size: DVec3) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let plate = cube(DVec3::new(-w / 2.0, -d / 2.0, 0.0), DVec3::new(w / 2.0, d / 2.0, h));
+    let mut cuts = vec![];
+    for x in [-w * 0.3, w * 0.3] {
+        cuts.push(cyl_z(x, -d * 0.15, 4.2, -1.0, h + 1.0, 32));
+        cuts.push(cube(DVec3::new(x - 2.0, -d * 0.15, -1.0), DVec3::new(x + 2.0, d * 0.2, h + 1.0)));
+        cuts.push(cyl_z(x, d * 0.2, 2.0, -1.0, h + 1.0, 24));
+    }
+    cut(plate, cuts)
+}
+
+pub fn cable_comb(size: DVec3, slots: u32, cable: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let block = cube(DVec3::new(-w / 2.0, -d / 2.0, 0.0), DVec3::new(w / 2.0, d / 2.0, h));
+    let n = slots.clamp(1, 30);
+    let r = (cable / 2.0).clamp(0.5, w / (2.0 * n as f64) - 0.6);
+    let mut cuts = vec![];
+    for i in 0..n {
+        let x = -w / 2.0 + w * (i as f64 + 0.5) / n as f64;
+        cuts.push(cyl_y(x, h * 0.45, r, -d / 2.0 - 1.0, d / 2.0 + 1.0, 32));
+        cuts.push(cube(DVec3::new(x - r * 0.6, -d / 2.0 - 1.0, h * 0.45), DVec3::new(x + r * 0.6, d / 2.0 + 1.0, h + 1.0)));
+    }
+    cut(block, cuts)
+}
+
+pub fn grommet(size: DVec3, hole: f64) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let hr = (hole / 2.0).clamp(1.0, r - 2.0);
+    let wall = 2.0;
+    let flange = 2.0;
+    rev_loop(&[(hr, 0.0), (hr + wall, 0.0), (hr + wall, size.z - flange), (r, size.z - flange), (r, size.z), (hr, size.z)], 96)
+}
+
+// ---- home & storage
+
+pub fn handle(size: DVec3, hole: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let t = (h * 0.3).clamp(3.0, 10.0);
+    let foot = (w * 0.15).max(8.0);
+    // arch in X/Z
+    let rx = w / 2.0 - foot / 2.0;
+    let mut outer = vec![DVec2::new(-w / 2.0, 0.0), DVec2::new(-w / 2.0 + foot, 0.0)];
+    let inner_r = DVec2::new(rx - foot / 2.0, h - t);
+    let n = 32;
+    for i in 0..=n {
+        let a = PI - PI * i as f64 / n as f64;
+        outer.push(DVec2::new(a.cos() * inner_r.x, a.sin() * inner_r.y));
+    }
+    outer.push(DVec2::new(w / 2.0 - foot, 0.0));
+    outer.push(DVec2::new(w / 2.0, 0.0));
+    for i in 0..=n {
+        let a = PI * i as f64 / n as f64;
+        outer.push(DVec2::new(a.cos() * w / 2.0, a.sin() * h));
+    }
+    outer.dedup_by(|a, b| a.distance(*b) < 1e-7);
+    let body = xz_extrude(vec![outer], d);
+    let r = (hole / 2.0).max(0.5);
+    cut(body, vec![cyl_z(-w / 2.0 + foot / 2.0, 0.0, r, -1.0, t, 24), cyl_z(w / 2.0 - foot / 2.0, 0.0, r, -1.0, t, 24)])
+}
+
+pub fn phone_stand(size: DVec3, angle: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let base_t = 4.0;
+    let a = angle.clamp(45.0, 85.0).to_radians();
+    let base = cube(DVec3::new(-w / 2.0, -d / 2.0, 0.0), DVec3::new(w / 2.0, d / 2.0, base_t));
+    let lip = cube(DVec3::new(-w / 2.0, -d / 2.0, 0.0), DVec3::new(w / 2.0, -d / 2.0 + 4.0, base_t + 10.0));
+    // leaning back support: a slab tilted back by (90° - angle)
+    let slab_t = 5.0;
+    let len = (h - base_t) / a.sin() + slab_t;
+    let mut slab = cube(DVec3::new(-w / 2.0, 0.0, 0.0), DVec3::new(w / 2.0, slab_t, len));
+    let tilt = std::f64::consts::FRAC_PI_2 - a;
+    let start_y = -d / 2.0 + 14.0;
+    for v in &mut slab.verts {
+        let (y, z) = (v.y, v.z);
+        v.y = start_y + y * tilt.cos() + z * tilt.sin();
+        v.z = -y * tilt.sin() + z * tilt.cos();
+    }
+    let slab = solid(slab);
+    // back brace from the top of the slab down to the rear of the base
+    let m = union(vec![base, lip, slab]);
+    // trim anything below the plate or above the requested height
+    cut(m, vec![cube(DVec3::new(-w, -d * 2.0, -20.0), DVec3::new(w, d * 2.0, 0.0)), cube(DVec3::new(-w, -d * 2.0, h), DVec3::new(w, d * 2.0, h + 50.0))])
+}
+
+pub fn divided_bin(size: DVec3, cols: u32, rows: u32, wall: f64) -> Mesh {
+    let w = wall.clamp(0.8, 5.0);
+    let bx = container(size, w, w, 2.0);
+    let mut parts = vec![bx];
+    let (cx, cy) = (cols.clamp(1, 12), rows.clamp(1, 12));
+    let div_h = size.z * 0.85;
+    for i in 1..cx {
+        let x = -size.x / 2.0 + size.x * i as f64 / cx as f64;
+        parts.push(cube(DVec3::new(x - w / 2.0, -size.y / 2.0 + 0.5, 0.0), DVec3::new(x + w / 2.0, size.y / 2.0 - 0.5, div_h)));
+    }
+    for j in 1..cy {
+        let y = -size.y / 2.0 + size.y * j as f64 / cy as f64;
+        parts.push(cube(DVec3::new(-size.x / 2.0 + 0.5, y - w / 2.0, 0.0), DVec3::new(size.x / 2.0 - 0.5, y + w / 2.0, div_h)));
+    }
+    union(parts)
+}
+
+pub fn planter(size: DVec3, wall: f64, hole: f64) -> Mesh {
+    let r_top = size.x.min(size.y) / 2.0;
+    let r_bot = r_top * 0.75;
+    let h = size.z;
+    let w = wall.clamp(1.0, r_bot * 0.4);
+    let outer = rev(&[(0.0, 0.0), (r_bot, 0.0), (r_top, h), (0.0, h)], 96);
+    let inner = rev(&[(0.0, w), (r_bot - w, w), (r_top - w, h + 0.01), (r_top - w, h + 2.0), (0.0, h + 2.0)], 96);
+    let mut cuts = vec![inner];
+    if hole > 0.0 {
+        cuts.push(cyl_z(0.0, 0.0, (hole / 2.0).min(r_bot * 0.5), -1.0, w + 1.0, 32));
+    }
+    cut(outer, cuts)
+}
+
+pub fn saucer(size: DVec3) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let h = size.z;
+    let w = 1.6;
+    rev_loop(&[(0.0, 0.0), (r * 0.9, 0.0), (r, h), (r - w, h), (r * 0.9 - w, w), (0.0, w)], 96)
+}
+
+pub fn funnel(size: DVec3, spout: f64) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let h = size.z;
+    let sr = (spout / 2.0).clamp(1.5, r * 0.5);
+    let w = 1.6;
+    let spout_h = h * 0.35;
+    // printed upside down (wide end on the plate)
+    rev_loop(
+        &[(r - w, 0.0), (r, 0.0), (sr + w, h - spout_h), (sr + w, h), (sr, h), (sr, h - spout_h), (r - w - 0.01, 0.0)],
+        96,
+    )
+}
+
+pub fn key_tag(size: DVec3, hole: f64) -> Mesh {
+    let (w, d, h) = (size.x, size.y, size.z);
+    let r = d / 2.0;
+    let mut outline = arc(-w / 2.0 + r, 0.0, r, PI / 2.0, 1.5 * PI, 24);
+    outline.push(DVec2::new(w / 2.0 - 3.0, -d / 2.0));
+    outline.extend(arc(w / 2.0 - 3.0, -d / 2.0 + 3.0, 3.0, -PI / 2.0, 0.0, 6));
+    outline.extend(arc(w / 2.0 - 3.0, d / 2.0 - 3.0, 3.0, 0.0, PI / 2.0, 6));
+    outline.dedup_by(|a, b| a.distance(*b) < 1e-7);
+    let hr = (hole / 2.0).clamp(0.5, r * 0.6);
+    solid(extrude(&[vec![outline, circle(hr, 32).into_iter().map(|p| p + DVec2::new(-w / 2.0 + r, 0.0)).collect()]], 0.0, h))
+}
+
+/// Screw-top jar (outer diameter W, height H) — pair with Jar cap of the same diameter.
+pub fn jar(size: DVec3, wall: f64) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let h = size.z;
+    let pitch = 3.0;
+    let neck_h = (h * 0.25).clamp(6.0, 16.0);
+    let thread_d = 2.0 * r - 5.0;
+    let w = wall.clamp(1.2, 4.0);
+    let body = cyl_z(0.0, 0.0, r, 0.0, h - neck_h, 96);
+    let neck = moved(threaded_rod(thread_d, pitch, neck_h, false, true), DVec3::new(0.0, 0.0, h - neck_h - 0.01));
+    let inner_r = thread_d / 2.0 - 0.54 * pitch - w;
+    let cavity = cyl_z(0.0, 0.0, inner_r, w, h + 1.0, 96);
+    let outer = union(vec![body, neck]);
+    cut(outer, vec![cavity])
+}
+
+pub fn jar_cap(size: DVec3, clearance: f64) -> Mesh {
+    let r = size.x.min(size.y) / 2.0;
+    let pitch = 3.0;
+    let top = 2.0;
+    let thread_d = 2.0 * r - 10.0 + 2.0 * clearance.clamp(0.1, 1.0);
+    let h = size.z;
+    let body = cyl_z(0.0, 0.0, r, 0.0, h, 96);
+    let cutter = moved(threaded_rod(thread_d, pitch, h, false, false), DVec3::new(0.0, 0.0, top));
+    // grip ridges
+    let mut ridges = vec![];
+    for i in 0..30 {
+        let a = TAU * i as f64 / 30.0;
+        ridges.push(cyl_z(a.cos() * r, a.sin() * r, 1.0, 0.0, h, 12));
+    }
+    let gripped = cut(body, ridges);
+    // countersink at the open end: no knife-edge thread sliver, and the jar starts easily
+    let r_out = thread_d / 2.0 + 0.4;
+    let r_in = thread_d / 2.0 - 0.54 * pitch - 0.2;
+    let depth = (r_out - r_in).max(0.3);
+    let sink = rev(&[(0.0, h - depth), (r_in, h - depth), (r_out + 0.5, h + 0.5), (0.0, h + 0.5)], 96);
+    cut(gripped, vec![cutter, sink])
+}
+
+/// Natural cap size for a jar of outer diameter `d`.
+pub fn jar_cap_size(jar_d: f64, jar_h: f64) -> DVec3 {
+    let neck_h = (jar_h * 0.25).clamp(6.0, 16.0);
+    let d = jar_d + 5.0;
+    DVec3::new(d, d, neck_h + 2.0 + 1.0)
+}

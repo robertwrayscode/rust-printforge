@@ -2,6 +2,18 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.4.1 — 2026-11-24
+- **24 more ready-made parts**, and the parts are now grouped into Hardware, Mounting and
+  Home & storage:
+  - Hardware: washer, standoff (hex), pulley, wheel with spokes, compression spring, gear rack
+    (meshes with the Gear), sliding dovetail joint, living hinge.
+  - Mounting: wall hook, pegboard hook (1/4" pegboard), pipe clamp (sized from the pipe),
+    corner brace, keyhole hanging plate, cable comb, desk grommet.
+  - Home & storage: divided bin (rows × columns), screw-top jar with matching cap (adding a jar
+    adds its cap), planter with drain hole, saucer, funnel, drawer handle, phone stand, key tag.
+- Every part was run through the print check; none has errors.
+- `roboforge parts-sheet <file.pforge>` lays out every part and prints any check warnings.
+
 ## 0.4.0 — 2026-11-24
 - **Parts library** (new PARTS section in the Shapes panel), all adjustable in the Inspector:
   - **Box + lid** — open container (wall, floor, corner radius) plus a matching lid with a lip

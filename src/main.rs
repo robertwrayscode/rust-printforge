@@ -47,7 +47,7 @@ fn attach_console() {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(windows)]
-    if matches!(args.first().map(|s| s.as_str()), Some("check" | "export" | "demo" | "--help" | "-h")) {
+    if matches!(args.first().map(|s| s.as_str()), Some("check" | "export" | "demo" | "parts-sheet" | "--help" | "-h")) {
         attach_console();
     }
     match args.first().map(|s| s.as_str()) {
@@ -97,6 +97,36 @@ fn main() {
                     std::process::exit(2);
                 }
             }
+        }
+        Some("parts-sheet") if args.len() >= 2 => {
+            // every library part, each checked on its own, then saved together
+            let mut all = scene::Document::default();
+            let (mut x, mut y, mut row_d) = (-140.0f64, -140.0f64, 0.0f64);
+            for info in shapes::LIBRARY.iter().filter(|i| i.category != "Basic shapes") {
+                let size = glam::DVec3::from(info.default_size);
+                let mut d = scene::Document::default();
+                let id = d.alloc_id();
+                d.objects.push(scene::Object::new(id, info.name, scene::Kind::Shape((info.shape)()), size));
+                let mut cache = scene::MeshCache::default();
+                let r = check::run(&demo::check_input(&d, &mut cache));
+                for i in r.issues.iter().filter(|i| i.severity != check::Severity::Info) {
+                    println!("{:<16} [{:?}] {} — {}", info.name, i.severity, i.title, i.detail);
+                }
+                if x + size.x > 140.0 {
+                    x = -140.0;
+                    y += row_d + 10.0;
+                    row_d = 0.0;
+                }
+                let id = all.alloc_id();
+                let mut o = scene::Object::new(id, info.name, scene::Kind::Shape((info.shape)()), size);
+                o.pos = glam::DVec3::new(x + size.x / 2.0, y + size.y / 2.0, 0.0);
+                o.color = (all.objects.len() % 4) as u8;
+                all.objects.push(o);
+                x += size.x + 10.0;
+                row_d = row_d.max(size.y);
+            }
+            io::save_project(std::path::Path::new(&args[1]), &all).expect("save");
+            println!("wrote {}", args[1]);
         }
         Some("demo") if args.len() >= 2 => {
             let d = demo::demo_doc();
