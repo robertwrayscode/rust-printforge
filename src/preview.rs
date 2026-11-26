@@ -140,7 +140,7 @@ pub fn estimate(objects: &[Mesh], fils: &[Filament]) -> Estimate {
     let mut grams = vec![];
     for (c, v) in vol.iter().enumerate() {
         if *v > 1e-6 {
-            let d = fils.get(c).map(|f| density(&f.material)).unwrap_or(1.24);
+            let d = fils.get(c).map(|f| crate::materials::canonical(&f.material).density).unwrap_or(1.24);
             grams.push((c as u8, v / 1000.0 * d));
         }
     }

@@ -6,6 +6,7 @@ pub mod csg;
 pub mod decal;
 pub mod demo;
 pub mod io;
+pub mod materials;
 pub mod mesh;
 pub mod render;
 pub mod scene;

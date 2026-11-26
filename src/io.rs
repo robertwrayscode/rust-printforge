@@ -133,7 +133,7 @@ fn dominant(m: &Mesh) -> u8 {
     area.into_iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|x| x.0).unwrap_or(0)
 }
 
-const BAMBU_TEMPLATE: &str = include_str!("../assets/bambu_h2c_template.json");
+pub const BAMBU_TEMPLATE: &str = include_str!("../assets/bambu_h2c_template.json");
 const BED_CENTER: [f64; 2] = [165.0, 160.0];
 
 /// Very rough flush estimate (mm³) from colour lightness difference; Bambu recalculates
@@ -164,6 +164,26 @@ pub fn bambu_project_config(fils: &[&Filament]) -> Value {
             arr.extend(unit.iter().cloned());
         }
         out.insert(k.clone(), Value::Array(arr));
+    }
+    // each filament's own Bambu preset (PETG temperatures for PETG, etc.)
+    for (i, f) in fils.iter().enumerate() {
+        let (pf, pv) = crate::materials::overrides(&f.material);
+        for (k, v) in pf.as_object().into_iter().flatten() {
+            if let (Some(Value::Array(arr)), Some(val)) = (out.get_mut(k), v.as_array().and_then(|a| a.first())) {
+                if i < arr.len() {
+                    arr[i] = val.clone();
+                }
+            }
+        }
+        for (k, v) in pv.as_object().into_iter().flatten() {
+            if let (Some(Value::Array(arr)), Some(vals)) = (out.get_mut(k), v.as_array()) {
+                for (j, val) in vals.iter().enumerate().take(nv) {
+                    if let Some(slot) = arr.get_mut(i * nv + j) {
+                        *slot = val.clone();
+                    }
+                }
+            }
+        }
     }
     let s = |x: String| Value::String(x);
     out.insert("filament_colour".into(), Value::Array(fils.iter().map(|f| s(f.hex())).collect()));
@@ -934,5 +954,25 @@ mod tests {
         assert_eq!(c["flush_volumes_matrix"].as_array().unwrap().len(), 18);
         assert_eq!(c["nozzle_temperature"].as_array().unwrap().len(), 9);
         assert_eq!(c["printer_settings_id"], "Bambu Lab H2C 0.4 nozzle");
+    }
+
+    #[test]
+    fn each_filament_gets_its_own_preset() {
+        let mut f = crate::scene::default_filaments();
+        f[1].material = "Bambu PETG HF".into();
+        f[2].material = "PLA".into(); // old designs
+        let refs: Vec<&Filament> = f.iter().take(3).collect();
+        let c = bambu_project_config(&refs);
+        let ids = c["filament_settings_id"].as_array().unwrap();
+        assert_eq!(ids[0], "Bambu PLA Basic @BBL H2C");
+        assert_eq!(ids[1], "Bambu PETG HF @BBL H2C");
+        assert_eq!(ids[2], "Bambu PLA Basic @BBL H2C");
+        assert_eq!(c["filament_type"][1], "PETG");
+        assert_eq!(c["filament_type"][0], "PLA");
+        // nozzle temperature is per variant: 3 per filament
+        let t = c["nozzle_temperature"].as_array().unwrap();
+        let pla: i64 = t[0].as_str().unwrap().parse().unwrap();
+        let petg: i64 = t[3].as_str().unwrap().parse().unwrap();
+        assert!(petg > pla, "{pla} {petg}");
     }
 }

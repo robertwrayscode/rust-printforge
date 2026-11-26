@@ -2,6 +2,20 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.6.1 — 2026-11-26
+- **Filament types**: each filament in the Filaments list now has a type — 32 of Bambu Lab's own
+  H2C presets (PLA Basic/Matte/Silk+/Tough+/Wood/CF…, PETG Basic/HF/CF, ABS, ASA, PC, TPU 95A HF,
+  PA6-CF, PVA, Support for PLA, and Generic PLA/PETG/PCTG/ABS/ASA/TPU for other brands).
+  - **Fixes**: exports used to label every filament "Bambu PLA Basic". Each filament now exports
+    with its own preset, so Bambu Studio uses the right temperatures and speeds with no setup.
+  - Older designs (type "PLA") open as PLA Basic.
+- **Colour codes**: type an exact hex code (e.g. #C8102E) next to each filament.
+- **★ My Filaments**: save spools once (★ next to a filament, or "Save all filaments in this
+  design") and add them to any later design from the My Filaments window.
+- **Mixed-material warnings** in the Filaments panel and the print check (PLA + PETG layers
+  barely bond, PLA with ABS/ASA/PC, TPU in multi-colour prints, PVA).
+- The preview's gram estimates use each preset's real density.
+
 ## 0.6.0 — 2026-11-25
 - **▤ Preview** (top bar): see your design as it will print.
   - Layer slider (and ◀ ▶ buttons) cuts the view at any layer, with the layer outline drawn in

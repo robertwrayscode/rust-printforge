@@ -36,6 +36,7 @@ pub struct CheckInput {
     pub hidden: Vec<String>,
     pub csg_warnings: Vec<String>,
     pub filament_names: Vec<String>,
+    pub filament_materials: Vec<String>,
     pub printer: Printer,
     pub overhang_deg: f64,
 }
@@ -148,6 +149,21 @@ pub fn run(input: &CheckInput) -> Report {
     } else if used.len() > p.nozzle_slots {
         push(&mut r, Severity::Warning, None, "More colours than hotends",
             format!("{} filaments are used. The H2C holds {} filaments in hotends (1 left + 6 Vortek); beyond that it must purge to swap filament, which adds waste and time.", used.len(), p.nozzle_slots), vec![]);
+    }
+    // materials that don't mix well
+    {
+        let fl: Vec<crate::scene::Filament> = used
+            .iter()
+            .map(|&c| crate::scene::Filament {
+                name: String::new(),
+                color: [0; 3],
+                material: input.filament_materials.get(c as usize).cloned().unwrap_or_else(|| "PLA".into()),
+            })
+            .collect();
+        let refs: Vec<&crate::scene::Filament> = fl.iter().collect();
+        for w in crate::materials::warnings(&refs) {
+            push(&mut r, Severity::Warning, None, "Mixed materials", w, vec![]);
+        }
     }
     // overlapping separate objects
     for i in 0..input.objects.len() {
@@ -601,6 +617,7 @@ mod tests {
             hidden: vec![],
             csg_warnings: vec![],
             filament_names: vec!["a".into(), "b".into()],
+            filament_materials: vec![],
             printer: Printer::default(),
             overhang_deg: 45.0,
         }

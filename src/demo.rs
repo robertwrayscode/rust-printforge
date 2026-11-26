@@ -51,6 +51,7 @@ pub fn check_input(doc: &Document, cache: &mut MeshCache) -> CheckInput {
         hidden: doc.objects.iter().filter(|o| !o.visible).map(|o| o.name.clone()).collect(),
         csg_warnings: cache.warnings.values().flatten().cloned().collect(),
         filament_names: doc.filaments.iter().map(|f| f.name.clone()).collect(),
+        filament_materials: doc.filaments.iter().map(|f| f.material.clone()).collect(),
         printer: doc.printer.clone(),
         overhang_deg: 45.0,
     }

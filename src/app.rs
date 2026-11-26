@@ -239,6 +239,7 @@ pub struct App {
     opened_at_start: bool,
     img_dialog: Option<ImgDialog>,
     sketch: Option<crate::sketch::SketchEditor>,
+    my_fils: Option<Vec<Filament>>,
     decal: Option<crate::decal::Decal>,
     decal_tex: Option<egui::TextureHandle>,
     svg_dialog: Option<SvgDialog>,
@@ -322,6 +323,7 @@ impl App {
             opened_at_start: false,
             img_dialog: None,
             sketch: None,
+            my_fils: None,
             decal: None,
             decal_tex: None,
             svg_dialog: None,
@@ -1085,6 +1087,7 @@ impl App {
 
     fn picture_windows(&mut self, ctx: &egui::Context) {
         self.sketch_window(ctx);
+        self.my_filaments_window(ctx);
         use crate::imaging::ImageMode;
         let mut close_img = false;
         let mut create_img = None;
@@ -1328,6 +1331,7 @@ impl App {
             hidden,
             csg_warnings: self.cache.warnings.values().flatten().cloned().collect(),
             filament_names: self.doc.filaments.iter().map(|f| f.name.clone()).collect(),
+            filament_materials: self.doc.filaments.iter().map(|f| f.material.clone()).collect(),
             printer: self.doc.printer.clone(),
             overhang_deg: self.overhang_deg,
         }
@@ -1719,6 +1723,90 @@ impl App {
         if ui.button("Close preview").clicked() {
             self.preview = None;
             self.geometry_dirty = true;
+        }
+    }
+
+    /// Filament slots actually used by visible parts (object colours and painting).
+    fn used_slots(&self) -> Vec<u8> {
+        let mut used = [false; 256];
+        for o in &self.doc.objects {
+            if o.hole || !o.visible {
+                continue;
+            }
+            used[o.color as usize] = true;
+            for &c in o.paint.iter().flatten() {
+                used[c as usize] = true;
+            }
+            if let Kind::Mesh(m) = &o.kind {
+                for &c in &m.colors {
+                    used[c as usize] = true;
+                }
+            }
+        }
+        used[NO_COLOR as usize] = false;
+        (0..255u8).filter(|&c| used[c as usize]).collect()
+    }
+
+    fn my_filaments_window(&mut self, ctx: &egui::Context) {
+        let Some(lib) = &mut self.my_fils else { return };
+        let mut open = true;
+        let mut add: Option<Filament> = None;
+        let mut del: Option<usize> = None;
+        let mut save_all = false;
+        egui::Window::new("My Filaments").open(&mut open).collapsible(false).resizable(true).default_width(420.0).show(ctx, |ui| {
+            ui.label(RichText::new("Spools you've saved with ★. They're kept on this computer for every design.").small().weak());
+            if lib.is_empty() {
+                ui.label("Nothing saved yet. Set up a filament in the Filaments list (colour, name, type), then click its ★.");
+            }
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                for (i, f) in lib.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(Vec2::new(22.0, 16.0), Sense::hover());
+                        ui.painter().rect_filled(r, 3.0, c32(f.color));
+                        ui.label(RichText::new(&f.name).strong());
+                        ui.label(RichText::new(format!("{} · {}", crate::materials::short(&f.material), f.hex())).weak());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("🗑").on_hover_text("Remove from My Filaments").clicked() {
+                                del = Some(i);
+                            }
+                            if ui.button("Add to design").clicked() {
+                                add = Some(f.clone());
+                            }
+                        });
+                    });
+                }
+            });
+            ui.separator();
+            if ui.button("★ Save all filaments in this design").clicked() {
+                save_all = true;
+            }
+        });
+        if let Some(i) = del {
+            lib.remove(i);
+            let _ = crate::materials::save_library(lib);
+        }
+        if save_all {
+            for f in &self.doc.filaments {
+                if !lib.iter().any(|x| x.name == f.name && x.color == f.color && x.material == f.material) {
+                    lib.push(f.clone());
+                }
+            }
+            let _ = crate::materials::save_library(lib);
+            self.status = "Saved this design's filaments to My Filaments.".into();
+        }
+        if let Some(f) = add {
+            if let Some(i) = self.doc.filaments.iter().position(|x| x.color == f.color && x.material == f.material) {
+                self.status = format!("'{}' is already filament {} in this design.", f.name, i + 1);
+            } else if self.doc.filaments.len() >= 24 {
+                self.status = "This design already has 24 filaments (the most the H2C can use).".into();
+            } else {
+                self.status = format!("Added '{}' as filament {}.", f.name, self.doc.filaments.len() + 1);
+                self.doc.filaments.push(f);
+                self.touch();
+            }
+        }
+        if !open {
+            self.my_fils = None;
         }
     }
 
@@ -2154,10 +2242,11 @@ impl App {
             }
             ui.separator();
             crate::theme::section(ui, "Filaments");
-            ui.label(RichText::new("These become the filament list in Bambu Studio. Set them to match your AMS spools.").small().weak());
+            ui.label(RichText::new("These become the filament list in Bambu Studio, each with Bambu's own settings for its type. Match them to your AMS spools.").small().weak());
             let mut remove = false;
             let n = self.doc.filaments.len();
             let mut changed = false;
+            let mut to_lib: Option<Filament> = None;
             for i in 0..n {
                 ui.horizontal(|ui| {
                     let f = &mut self.doc.filaments[i];
@@ -2165,25 +2254,80 @@ impl App {
                     if ui.color_edit_button_srgb(&mut f.color).changed() {
                         changed = true;
                     }
-                    if ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(90.0)).changed() {
+                    if ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(78.0)).changed() {
                         changed = true;
                     }
+                    if ui.small_button("★").on_hover_text("Save this filament to My Filaments").clicked() {
+                        to_lib = Some(f.clone());
+                    }
                     let active = self.paint_slot as usize == i;
-                    if ui.radio(active, "brush").clicked() {
+                    if ui.radio(active, "").on_hover_text("Use for the paint brush").clicked() {
                         self.paint_slot = i as u8;
                         self.erase = false;
                     }
                 });
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    let f = &mut self.doc.filaments[i];
+                    // hex colour code, kept as typed while editing
+                    let id = egui::Id::new(("fil_hex", i));
+                    let mut txt = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| f.hex());
+                    let r = ui.add(egui::TextEdit::singleline(&mut txt).desired_width(62.0).font(egui::TextStyle::Monospace)).on_hover_text("Colour code, e.g. #C8102E (from the spool label or Bambu's website)");
+                    if r.changed() {
+                        if let Some(c) = crate::materials::parse_hex(&txt) {
+                            f.color = c;
+                            changed = true;
+                        }
+                    }
+                    if r.has_focus() {
+                        ui.data_mut(|d| d.insert_temp(id, txt));
+                    } else {
+                        ui.data_mut(|d| d.remove::<String>(id));
+                    }
+                    let cur = crate::materials::canonical(&f.material).name.clone();
+                    egui::ComboBox::from_id_salt(("fil_mat", i)).width(104.0).height(440.0).selected_text(crate::materials::short(&f.material)).show_ui(ui, |ui| {
+                        let mut last_generic = false;
+                        for m in crate::materials::all() {
+                            let g = m.name.starts_with("Generic");
+                            if g && !last_generic {
+                                ui.separator();
+                            }
+                            last_generic = g;
+                            if ui.selectable_label(m.name == cur, m.name.trim_start_matches("Bambu ")).on_hover_text(format!("{} · {} °C · {} g/cm³", m.kind, m.nozzle_temp, m.density)).clicked() {
+                                f.material = m.name.clone();
+                                changed = true;
+                            }
+                        }
+                    });
+                });
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.add_enabled(n < 24, egui::Button::new("+ Add")).clicked() {
-                    self.doc.filaments.push(Filament { name: format!("Filament {}", n + 1), color: [128, 128, 128], material: "PLA".into() });
+                    self.doc.filaments.push(Filament { name: format!("Filament {}", n + 1), color: [128, 128, 128], material: "Bambu PLA Basic".into() });
                     changed = true;
                 }
                 if ui.add_enabled(n > 1, egui::Button::new("− Remove last")).clicked() {
                     remove = true;
                 }
+                if ui.button("★ My Filaments…").on_hover_text("Your saved spools — add them to any design").clicked() {
+                    self.my_fils = Some(crate::materials::library());
+                }
             });
+            {
+                let refs: Vec<&Filament> = self.used_slots().into_iter().filter_map(|c| self.doc.filaments.get(c as usize)).collect();
+                for w in crate::materials::warnings(&refs) {
+                    ui.label(RichText::new(format!("⚠ {w}")).small().color(Color32::from_rgb(240, 170, 60)));
+                }
+            }
+            if let Some(f) = to_lib {
+                let mut lib = crate::materials::library();
+                lib.retain(|x| !(x.name == f.name && x.color == f.color && x.material == f.material));
+                lib.push(f.clone());
+                self.status = match crate::materials::save_library(&lib) {
+                    Ok(()) => format!("Saved '{}' to My Filaments.", f.name),
+                    Err(e) => format!("Couldn't save My Filaments: {e}"),
+                };
+            }
             if remove {
                 self.doc.filaments.pop();
                 let max = self.doc.filaments.len() as u8 - 1;

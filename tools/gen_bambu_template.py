@@ -81,6 +81,45 @@ per_fil.pop("filament_colour", None)
 per_fil.pop("filament_map", None)
 for k in ("compatible_printers", "compatible_printers_condition", "compatible_prints", "compatible_prints_condition"):
     glob_cfg.pop(k, None); per_fil.pop(k, None); per_var.pop(k, None)
-json.dump({"variants": variants, "global": glob_cfg, "per_filament": per_fil, "per_variant": per_var},
+# ---- other filament presets: only the values that differ from PLA Basic
+MATERIALS = [
+    "Bambu PLA Basic", "Bambu PLA Matte", "Bambu PLA Silk+", "Bambu PLA Silk", "Bambu PLA Tough+",
+    "Bambu PLA Translucent", "Bambu PLA Wood", "Bambu PLA Glow", "Bambu PLA Marble", "Bambu PLA Sparkle",
+    "Bambu PLA Metal", "Bambu PLA Galaxy", "Bambu PLA-CF", "Bambu PETG Basic", "Bambu PETG HF",
+    "Bambu PETG Translucent", "Bambu PETG-CF", "Bambu ABS", "Bambu ASA", "Bambu PC", "Bambu TPU 95A HF",
+    "Bambu TPU for AMS", "Bambu PA6-CF", "Bambu Support For PLA", "Bambu PVA",
+    "Generic PLA", "Generic PLA Silk", "Generic PETG", "Generic PCTG", "Generic ABS", "Generic ASA", "Generic TPU",
+]
+def first(v):
+    return v[0] if isinstance(v, list) and v else v
+materials = {}
+for name in MATERIALS:
+    f = resolve("filament", name + " @BBL H2C")
+    pf, pv = {}, {}
+    for k in fil_keys | set(k for k in f if k not in SKIP):
+        if k in ("compatible_printers", "compatible_printers_condition", "compatible_prints", "compatible_prints_condition", "filament_colour"):
+            continue
+        v = f.get(k)
+        if v is None:
+            continue
+        if k in per_var:
+            vv = v if isinstance(v, list) else [v]
+            vv = vv if len(vv) == nv else (vv * nv)[:nv]
+            if vv != per_var[k]:
+                pv[k] = vv
+        elif k in per_fil:
+            vv = (v if isinstance(v, list) else [v])[:1]
+            if vv != per_fil[k]:
+                pf[k] = vv
+    pf["filament_settings_id"] = [name + " @BBL H2C"]
+    pf["filament_ids"] = [f.get("filament_id", "")]
+    materials[name] = {
+        "type": first(f.get("filament_type", ["PLA"])),
+        "density": float(first(f.get("filament_density", ["1.24"]))),
+        "nozzle_temp": int(float(first(f.get("nozzle_temperature", ["220"])))),
+        "per_filament": pf,
+        "per_variant": pv,
+    }
+json.dump({"variants": variants, "global": glob_cfg, "per_filament": per_fil, "per_variant": per_var, "materials": materials},
           open(out, "w"), indent=1, sort_keys=True)
 print("global", len(glob_cfg), "per_filament", len(per_fil), "per_variant", len(per_var))
