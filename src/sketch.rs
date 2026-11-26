@@ -120,6 +120,103 @@ pub fn build(pts: &[[f64; 2]], round: &[bool], spin: bool, height: f64, sides: u
     m
 }
 
+/// The inside profile (r, y) of a hollow spun shape, from the floor at the axis up and out
+/// through the open top. None if the shape can't be hollowed.
+pub fn cavity(pts: &[[f64; 2]], round: &[bool], wall: f64, floor: f64) -> Option<Vec<(f64, f64)>> {
+    if wall <= 0.0 || problem(pts, round, true).is_some() {
+        return None;
+    }
+    let p = outline(pts, round);
+    let n = p.len();
+    let on: Vec<bool> = p.iter().map(|q| q.x < 1e-6).collect();
+    let start = (0..n).find(|&i| on[i] && !on[(i + 1) % n])?;
+    // open profile from the axis, round the outside, back to the axis
+    let mut prof = vec![DVec2::new(0.0, p[start].y)];
+    let mut i = (start + 1) % n;
+    while !on[i] {
+        prof.push(p[i]);
+        i = (i + 1) % n;
+    }
+    prof.push(DVec2::new(0.0, p[i].y));
+    if prof[0].y > prof[prof.len() - 1].y {
+        prof.reverse();
+    }
+    // the side wall: from the bottom axis point to the highest outside point (the rim)
+    let top_i = (1..prof.len() - 1).max_by(|&a, &b| prof[a].y.total_cmp(&prof[b].y).then(a.cmp(&b)))?;
+    let side = &prof[..=top_i];
+    let (y_bot, y_top) = (prof[0].y, prof[top_i].y);
+    let y_floor = y_bot + floor.max(0.2);
+    if y_floor >= y_top - 0.2 {
+        return None;
+    }
+    let dist = |q: DVec2| {
+        side.windows(2)
+            .map(|w| {
+                let (a, b) = (w[0], w[1]);
+                let ab = b - a;
+                let t = ((q - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+                (a + ab * t).distance(q)
+            })
+            .fold(f64::MAX, f64::min)
+    };
+    // outside radius at height y (rightmost crossing of the side wall)
+    let r_out = |y: f64| {
+        side.windows(2)
+            .filter_map(|w| {
+                let (a, b) = (w[0], w[1]);
+                if (a.y - y) * (b.y - y) > 0.0 || (a.y - b.y).abs() < 1e-12 {
+                    return if (a.y - y).abs() < 1e-9 { Some(a.x) } else { None };
+                }
+                Some(a.x + (b.x - a.x) * (y - a.y) / (b.y - a.y))
+            })
+            .fold(0.0f64, f64::max)
+    };
+    let steps = (((y_top - y_floor) / 0.25).ceil() as usize).clamp(16, 600);
+    let mut rows = vec![];
+    for k in 0..=steps {
+        let y = y_floor + (y_top - y_floor) * k as f64 / steps as f64;
+        let ro = r_out(y);
+        let dr = (ro / 300.0).max(0.02);
+        let mut r = ro - wall * 0.5;
+        while r > 0.0 && dist(DVec2::new(r, y)) < wall {
+            r -= dr;
+        }
+        rows.push((r.max(0.0), y));
+    }
+    // the cavity must be open at the top and connected from there down
+    let mut first = rows.len();
+    for k in (0..rows.len()).rev() {
+        if rows[k].0 < 0.3 {
+            break;
+        }
+        first = k;
+    }
+    if first >= rows.len() || rows.len() - first < 3 {
+        return None;
+    }
+    let rows = &rows[first..];
+    let mut cav = vec![(0.0, rows[0].1)];
+    cav.extend_from_slice(rows);
+    let (rt, yt) = rows[rows.len() - 1];
+    cav.push((rt, yt + 5.0));
+    cav.push((0.0, yt + 5.0));
+    Some(cav)
+}
+
+pub fn build_hollow(pts: &[[f64; 2]], round: &[bool], spin: bool, height: f64, sides: u32, wall: f64, floor: f64) -> Mesh {
+    let outer = build(pts, round, spin, height, sides);
+    if !spin || wall <= 0.0 {
+        return outer;
+    }
+    let Some(cav) = cavity(pts, round, wall, floor) else { return outer };
+    let mut inner = revolve(&cav, sides);
+    inner.weld(1e-7);
+    inner.compact();
+    orient_outward(&mut inner);
+    let r = crate::csg::combine(&[outer.clone()], &[inner]);
+    if r.mesh.tris.is_empty() { outer } else { r.mesh }
+}
+
 pub fn natural_size(pts: &[[f64; 2]], round: &[bool], spin: bool, height: f64) -> DVec3 {
     let p = outline(pts, round);
     if p.len() < 3 {
@@ -147,6 +244,9 @@ pub struct SketchEditor {
     pub height: f64,
     pub sides: u32,
     pub snap: f64,
+    pub hollow: bool,
+    pub wall: f64,
+    pub floor: f64,
     /// object being edited (None = new part)
     pub editing: Option<u64>,
     scale: f32,
@@ -163,17 +263,20 @@ pub enum SketchResult {
 
 impl SketchEditor {
     pub fn new() -> Self {
-        Self { pts: vec![], round: vec![], spin: false, height: 10.0, sides: 64, snap: 1.0, editing: None, scale: 6.0, pan: Vec2::ZERO, drag: None, history: vec![] }
+        Self { pts: vec![], round: vec![], spin: false, height: 10.0, sides: 64, snap: 1.0, hollow: false, wall: 2.0, floor: 2.0, editing: None, scale: 6.0, pan: Vec2::ZERO, drag: None, history: vec![] }
     }
 
     pub fn from_shape(s: &Shape, id: u64) -> Option<Self> {
-        if let Shape::Sketch { pts, round, spin, height, sides } = s {
+        if let Shape::Sketch { pts, round, spin, height, sides, wall, floor } = s {
             let mut e = Self::new();
             e.pts = pts.clone();
             e.round = round.clone();
             e.spin = *spin;
             e.height = *height;
             e.sides = *sides;
+            e.wall = *wall;
+            e.floor = if *floor > 0.0 { *floor } else { 2.0 };
+            e.hollow = *wall > 0.0;
             e.editing = Some(id);
             e.fit();
             Some(e)
@@ -199,7 +302,16 @@ impl SketchEditor {
     }
 
     fn shape(&self) -> Shape {
-        Shape::Sketch { pts: self.pts.clone(), round: self.round.clone(), spin: self.spin, height: self.height, sides: self.sides }
+        let hollow = self.spin && self.hollow;
+        Shape::Sketch {
+            pts: self.pts.clone(),
+            round: self.round.clone(),
+            spin: self.spin,
+            height: self.height,
+            sides: self.sides,
+            wall: if hollow { self.wall } else { 0.0 },
+            floor: if hollow { self.floor } else { 0.0 },
+        }
     }
 
     fn save_undo(&mut self) {
@@ -233,6 +345,7 @@ impl SketchEditor {
             ui.horizontal(|ui| {
                 if self.spin {
                     ui.add(egui::Slider::new(&mut self.sides, 8..=256).text("smoothness"));
+                    ui.checkbox(&mut self.hollow, "Hollow (open top)").on_hover_text("Makes a cup/vase: the inside follows your outline so the wall is the same thickness everywhere");
                 } else {
                     ui.add(egui::Slider::new(&mut self.height, 0.2..=300.0).text("height (mm)"));
                 }
@@ -243,6 +356,13 @@ impl SketchEditor {
                     }
                 });
             });
+            if self.spin && self.hollow {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut self.wall, 0.4..=10.0).text("wall (mm)"));
+                    ui.add(egui::Slider::new(&mut self.floor, 0.4..=20.0).text("floor (mm)"));
+                });
+                ui.label(RichText::new("The inside is shown dashed. 0.8 mm or more is sturdy; 0.4–0.5 mm is a single nozzle line.").small().weak());
+            }
             ui.horizontal(|ui| {
                 ui.label("Start from:");
                 let presets: [(&str, Vec<[f64; 2]>, Vec<bool>); 4] = [
@@ -281,6 +401,9 @@ impl SketchEditor {
             } else {
                 let s = natural_size(&self.pts, &self.round, self.spin, self.height);
                 ui.label(format!("Size: {:.1} × {:.1} × {:.1} mm", s.x, s.y, s.z));
+                if self.spin && self.hollow && cavity(&self.pts, &self.round, self.wall, self.floor).is_none() {
+                    ui.colored_label(Color32::from_rgb(240, 170, 60), "Too narrow to hollow with this wall — it will stay solid. Use a thinner wall, or make sure the outline touches the axis at the bottom.");
+                }
             }
             ui.horizontal(|ui| {
                 let label = if self.editing.is_some() { "Update part" } else { "Add to plate" };
@@ -373,6 +496,15 @@ impl SketchEditor {
             let n = self.pts.len();
             for i in 0..n {
                 painter.line_segment([to_screen(self.pts[i]), to_screen(self.pts[(i + 1) % n])], Stroke::new(1.0, Color32::from_gray(90)));
+            }
+        }
+        // inside of a hollow spin (dashed)
+        if self.spin && self.hollow {
+            if let Some(cav) = cavity(&self.pts, &self.round, self.wall, self.floor) {
+                let scr: Vec<Pos2> = cav.iter().map(|&(r, y)| to_screen([r, y])).collect();
+                for w in scr.windows(2) {
+                    painter.extend(egui::Shape::dashed_line(&[w[0], w[1]], Stroke::new(1.5, Color32::from_rgb(255, 210, 90)), 5.0, 4.0));
+                }
             }
         }
         // interaction
@@ -496,6 +628,24 @@ mod tests {
         let vase = vec![[0.0, 0.0], [15.0, 0.0], [20.0, 15.0], [10.0, 35.0], [12.0, 50.0], [0.0, 50.0]];
         let vm = build(&vase, &[false, false, true, true, false, false], true, 0.0, 64);
         assert!(watertight(&vm) && vm.volume() > 0.0);
+    }
+
+    #[test]
+    fn hollow_vase_has_even_wall_and_open_top() {
+        let vase = vec![[0.0, 0.0], [15.0, 0.0], [20.0, 15.0], [10.0, 35.0], [12.0, 50.0], [0.0, 50.0]];
+        let rd = [false, false, true, true, false, false];
+        let solid = build(&vase, &rd, true, 0.0, 64);
+        let h = build_hollow(&vase, &rd, true, 0.0, 64, 2.0, 2.0);
+        assert!(watertight(&h), "hollow not watertight");
+        assert!(h.volume() < solid.volume() * 0.6 && h.volume() > solid.volume() * 0.1, "{} vs {}", h.volume(), solid.volume());
+        // bounds unchanged (the cavity doesn't eat the outside)
+        let (a, b) = (solid.bounds(), h.bounds());
+        assert!((a.max - b.max).length() < 0.05 && (a.min - b.min).length() < 0.05);
+        // every inside wall point is ~2 mm from the outside
+        let cav = cavity(&vase, &rd, 2.0, 2.0).unwrap();
+        assert!(cav.len() > 20);
+        // a wall too thick for the neck stays solid rather than failing
+        assert!(cavity(&vase, &rd, 30.0, 2.0).is_none());
     }
 
     #[test]

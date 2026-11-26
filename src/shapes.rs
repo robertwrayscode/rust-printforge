@@ -61,7 +61,18 @@ pub enum Shape {
     Jar { wall: f64 },
     JarCap { clearance: f64 },
     /// Drawn outline (mm), extruded up or spun round the Y axis.
-    Sketch { pts: Vec<[f64; 2]>, round: Vec<bool>, spin: bool, height: f64, sides: u32 },
+    Sketch {
+        pts: Vec<[f64; 2]>,
+        round: Vec<bool>,
+        spin: bool,
+        height: f64,
+        sides: u32,
+        /// Spin only: wall thickness of a hollow, open-top shape (0 = solid).
+        #[serde(default)]
+        wall: f64,
+        #[serde(default)]
+        floor: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -382,7 +393,7 @@ impl Shape {
             Shape::KeyTag { hole } => key_tag(size, *hole),
             Shape::Jar { wall } => jar(size, *wall),
             Shape::JarCap { clearance } => jar_cap(size, *clearance),
-            Shape::Sketch { pts, round, spin, height, sides } => crate::sketch::build(pts, round, *spin, *height, *sides),
+            Shape::Sketch { pts, round, spin, height, sides, wall, floor } => crate::sketch::build_hollow(pts, round, *spin, *height, *sides, *wall, *floor),
             _ => return None,
         })
     }

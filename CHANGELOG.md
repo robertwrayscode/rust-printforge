@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.5.2 — 2026-11-25
+- **Hollow spun shapes**: tick "Hollow (open top)" in the sketch window's Spin mode (or in the
+  Inspector) and set the wall and floor thickness. The inside follows your outline, so the wall
+  is the same thickness everywhere — narrow necks included. The inside is drawn dashed while you
+  sketch; a warning appears if a neck is too narrow for the wall you chose.
+
 ## 0.5.1 — 2026-11-25
 - **👁 See-through** button (top bar, or press X): every part turns see-through with its sharp
   edges outlined, so you can look inside — check a hole you cut, a hollow, or a hidden cavity.

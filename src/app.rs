@@ -3873,9 +3873,18 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.add(egui::Slider::new(clearance, 0.1..=1.0).text("thread clearance (mm)"));
         }
         Shape::PegHook | Shape::KeyholePlate | Shape::Saucer => {}
-        Shape::Sketch { spin, height, sides: n, .. } => {
+        Shape::Sketch { spin, height, sides: n, wall, floor, .. } => {
             if *spin {
                 sides(ui, n, 8, 256, "smoothness");
+                let mut hollow = *wall > 0.0;
+                if ui.checkbox(&mut hollow, "Hollow (open top)").changed() {
+                    *wall = if hollow { 2.0 } else { 0.0 };
+                    *floor = if hollow { 2.0 } else { 0.0 };
+                }
+                if hollow {
+                    ui.add(egui::Slider::new(wall, 0.4..=10.0).text("wall (mm)"));
+                    ui.add(egui::Slider::new(floor, 0.4..=20.0).text("floor (mm)"));
+                }
             } else {
                 ui.add(egui::Slider::new(height, 0.2..=300.0).text("height (mm)"));
             }
