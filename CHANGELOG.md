@@ -2,6 +2,13 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.7.1 — 2026-11-26
+- **Make it printable** now spots a lid or jar cap sitting on its box/jar and moves it (with any
+  raised text on it) onto the plate beside it, so they print as separate pieces instead of fused.
+- **AI helper** instructions improved: it now knows which way is left/right/front/back, how to
+  work out edges when placing parts against each other, to double-check placements, and to put
+  lids and caps beside what they fit instead of stacking or grouping them.
+
 ## 0.7.0 — 2026-11-26
 - **✨ AI helper** (tools bar): describe what you want — "a 60 mm box with a lid and ROBERT
   raised on top in blue", "make the selected part 10 mm taller" — and an AI model builds it.

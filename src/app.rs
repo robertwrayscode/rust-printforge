@@ -767,8 +767,71 @@ impl App {
 
     /// Re-orient every free-standing part for printing: best face down, on the plate,
     /// spread out on the bed.
+    /// Lids and jar caps sitting on their box/jar would print fused to it: move each one
+    /// (with anything sitting on it, like raised text) onto the plate beside it.
+    fn separate_lids(&mut self) -> Vec<String> {
+        fn has_lid(o: &Object) -> (bool, bool) {
+            match &o.kind {
+                Kind::Shape(Shape::Lid { .. } | Shape::JarCap { .. }) => (true, false),
+                Kind::Shape(Shape::Container { .. } | Shape::Jar { .. }) => (false, true),
+                Kind::Group { children, .. } => children.iter().map(has_lid).fold((false, false), |a, b| (a.0 || b.0, a.1 || b.1)),
+                _ => (false, false),
+            }
+        }
+        let mut out = vec![];
+        let lids: Vec<u64> = self.doc.objects.iter().filter(|o| o.visible && !o.hole && !o.locked).filter(|o| has_lid(o) == (true, false)).map(|o| o.id).collect();
+        for id in lids {
+            let b = self.world_bounds(id);
+            if b.min.z < 0.5 {
+                continue;
+            }
+            // things resting on the lid travel with it
+            let riders: Vec<u64> = self
+                .doc
+                .objects
+                .iter()
+                .filter(|o| o.id != id && o.visible)
+                .map(|o| o.id)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter(|&r| {
+                    let rb = self.world_bounds(r);
+                    rb.min.z >= b.max.z - 0.5 - (b.max.z - b.min.z) && rb.min.z > b.min.z + 0.1 && rb.min.x < b.max.x && rb.max.x > b.min.x && rb.min.y < b.max.y && rb.max.y > b.min.y
+                })
+                .collect();
+            let mut all = b;
+            for &r in &riders {
+                let rb = self.world_bounds(r);
+                all.min = all.min.min(rb.min);
+                all.max = all.max.max(rb.max);
+            }
+            let size = all.max - all.min;
+            // look for room beside it, temporarily ignoring the lid group itself
+            let moving: Vec<u64> = std::iter::once(id).chain(riders.iter().copied()).collect();
+            let used: Vec<Aabb> = self.doc.objects.clone().iter().filter(|o| o.visible && !moving.contains(&o.id)).map(|o| self.cache.world_mesh(o).bounds()).collect();
+            let mut x = all.max.x + 10.0 + size.x / 2.0;
+            let cy = (all.min.y + all.max.y) / 2.0;
+            for _ in 0..60 {
+                let cand = Aabb { min: DVec3::new(x - size.x / 2.0, cy - size.y / 2.0, 0.0), max: DVec3::new(x + size.x / 2.0, cy + size.y / 2.0, size.z) };
+                if !used.iter().any(|u| u.overlaps(&cand, -2.0)) {
+                    break;
+                }
+                x += 10.0;
+            }
+            let delta = DVec3::new(x - (all.min.x + all.max.x) / 2.0, 0.0, -b.min.z);
+            for m in &moving {
+                if let Some(o) = self.doc.find_mut(*m) {
+                    o.pos += delta;
+                }
+            }
+            let name = self.doc.find(id).map(|o| o.name.clone()).unwrap_or_default();
+            out.push(format!("Moved '{name}' off its box onto the plate beside it, so they print as separate pieces."));
+        }
+        out
+    }
+
     fn make_printable(&mut self) {
-        let mut lines = vec![];
+        let mut lines = self.separate_lids();
         let ids: Vec<u64> = self.doc.objects.iter().filter(|o| o.visible && !o.hole && !o.locked).map(|o| o.id).collect();
         let bounds: Vec<Aabb> = ids.iter().map(|&id| self.world_bounds(id)).collect();
         let resting = crate::check::resting_on(&bounds);
@@ -778,6 +841,9 @@ impl App {
                 continue; // stacked parts stay with what they sit on
             }
             let Some(o) = self.doc.find(id).cloned() else { continue };
+            if matches!(o.kind, Kind::Shape(Shape::Lid { .. } | Shape::JarCap { .. })) {
+                continue; // lids and caps are already modelled the way they print
+            }
             let wm = self.cache.world_mesh(&o);
             let c = wm.bounds().center();
             // candidate "down" directions: the 6 axes + the 3 biggest flat faces

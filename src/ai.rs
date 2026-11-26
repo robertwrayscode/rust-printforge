@@ -182,6 +182,13 @@ Actions:
 
 Rules:
 - Units are millimetres. size = [width X, depth Y, height Z] of the part's bounding box.
+- Directions as the user sees the plate: LEFT = -X, RIGHT = +X, FRONT (towards the user) = -Y, BACK = +Y, UP = +Z.
+  A part's edges: left x - W/2, right x + W/2, front y - D/2, back y + D/2, top z + H.
+  Example: to stand a 30 mm cup against the outside of the LEFT wall of a tray centred at x=0 that is 120 wide, put the cup at x = -60 - 15 = -75 (same y as the tray).
+  To put a feature INSIDE a part along its back edge, keep it within the part: y = back - (feature depth)/2.
+- Before answering, check every part: is it where the user said (left/right/front/back/on top), touching what it should touch, and not sticking out where it shouldn't?
+- Parts that come apart (lids, jar caps, separate pieces) go BESIDE what they fit, on the plate (z = 0), at least 10 mm apart — never stacked on top and never in the same group. Decorations like raised text that belong to the lid sit on the lid and may be grouped with the lid only.
+- Only group parts that must become one solid piece (or holes with what they cut).
 - pos is the CENTRE OF THE BOTTOM of the part. z=0 means sitting on the print plate. To put B on top of A: B.z = A.z + A.height.
 - rot is in degrees around X, Y, Z (applied in that order). Usually [0,0,0].
 - To cut a hole or pocket: add a shape with "hole":true overlapping the solid, then group them. Holes should poke slightly out of the surface (0.5 mm) so the cut is clean.
