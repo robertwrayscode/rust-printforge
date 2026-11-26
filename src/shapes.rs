@@ -61,6 +61,8 @@ pub enum Shape {
     Jar { wall: f64 },
     JarCap { clearance: f64 },
     FitTest,
+    GridBin { gx: u32, gy: u32, hu: u32, div_x: u32, div_y: u32, magnets: bool, lip: bool },
+    GridPlate { gx: u32, gy: u32 },
     /// Drawn outline (mm), extruded up or spun round the Y axis.
     Sketch {
         pts: Vec<[f64; 2]>,
@@ -138,6 +140,8 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Mounting", name: "Keyhole plate", shape: || Shape::KeyholePlate, default_size: [60.0, 30.0, 4.0] },
     ShapeInfo { category: "Mounting", name: "Cable comb", shape: || Shape::CableComb { slots: 5, cable: 5.0 }, default_size: [45.0, 10.0, 12.0] },
     ShapeInfo { category: "Mounting", name: "Desk grommet", shape: || Shape::Grommet { hole: 50.0 }, default_size: [60.0, 60.0, 20.0] },
+    ShapeInfo { category: "Home & storage", name: "Gridfinity bin", shape: || Shape::GridBin { gx: 2, gy: 1, hu: 3, div_x: 2, div_y: 1, magnets: false, lip: true }, default_size: [83.5, 41.5, 25.4] },
+    ShapeInfo { category: "Home & storage", name: "Gridfinity baseplate", shape: || Shape::GridPlate { gx: 3, gy: 2 }, default_size: [127.0, 85.0, 4.5] },
     ShapeInfo { category: "Home & storage", name: "Divided bin", shape: || Shape::DividedBin { cols: 3, rows: 2, wall: 1.6 }, default_size: [100.0, 60.0, 40.0] },
     ShapeInfo { category: "Home & storage", name: "Screw jar", shape: || Shape::Jar { wall: 2.0 }, default_size: [60.0, 60.0, 70.0] },
     ShapeInfo { category: "Home & storage", name: "Jar cap", shape: || Shape::JarCap { clearance: 0.4 }, default_size: [65.0, 65.0, 17.5] },
@@ -204,6 +208,8 @@ impl Shape {
             Shape::Jar { .. } => "Screw jar",
             Shape::JarCap { .. } => "Jar cap",
             Shape::FitTest => "Fit test",
+            Shape::GridBin { .. } => "Gridfinity bin",
+            Shape::GridPlate { .. } => "Gridfinity baseplate",
             Shape::Sketch { spin: true, .. } => "Sketch (spun)",
             Shape::Sketch { .. } => "Sketch",
         }
@@ -216,6 +222,8 @@ impl Shape {
             Shape::Nut { diameter, .. } => Some(crate::parts::nut_size(*diameter)),
             Shape::CableClip { cable } => Some(crate::parts::cable_clip_size(*cable)),
             Shape::PipeClamp { pipe } => Some(crate::parts::pipe_clamp_size(*pipe)),
+            Shape::GridBin { gx, gy, hu, lip, .. } => Some(crate::parts::gridfinity_bin_size(*gx, *gy, *hu, *lip)),
+            Shape::GridPlate { gx, gy } => Some(crate::parts::gridfinity_baseplate_size(*gx, *gy)),
             Shape::Sketch { pts, round, spin, height, .. } => Some(crate::sketch::natural_size(pts, round, *spin, *height)),
             _ => None,
         }
@@ -397,6 +405,8 @@ impl Shape {
             Shape::Jar { wall } => jar(size, *wall),
             Shape::JarCap { clearance } => jar_cap(size, *clearance),
             Shape::FitTest => fit_test(size),
+            Shape::GridBin { gx, gy, hu, div_x, div_y, magnets, lip } => gridfinity_bin(*gx, *gy, *hu, *div_x, *div_y, *magnets, *lip),
+            Shape::GridPlate { gx, gy } => gridfinity_baseplate(*gx, *gy),
             Shape::Sketch { pts, round, spin, height, sides, wall, floor } => crate::sketch::build_hollow(pts, round, *spin, *height, *sides, *wall, *floor),
             _ => return None,
         })

@@ -2,6 +2,14 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.9.0 — 2026-11-26
+- **Gridfinity** (Home & storage), Zack Freedman's open modular drawer system:
+  - **Gridfinity bin**: 1–7 × 1–7 grid units (42 mm) and 2–20 height units (7 mm), compartments
+    across and front-to-back, optional magnet holes (6×2 mm) and stacking lip. Standard feet so
+    it drops into any Gridfinity baseplate.
+  - **Gridfinity baseplate**: 1–7 × 1–7 open-frame plate with the standard pocket profile (ridges
+    kept at a printable 0.9 mm and a 0.5 mm border).
+
 ## 0.8.1 — 2026-11-26
 - Fit test: numbers moved in from the plate's front edge (0.8.0 cut them right at the edge).
 

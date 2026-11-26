@@ -4535,6 +4535,21 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.add(egui::Slider::new(clearance, 0.1..=1.0).text("thread clearance (mm)"));
         }
         Shape::PegHook | Shape::KeyholePlate | Shape::Saucer => {}
+        Shape::GridBin { gx, gy, hu, div_x, div_y, magnets, lip } => {
+            ui.label(RichText::new("Size is set in Gridfinity units: 42 mm squares, 7 mm height steps.").small().weak());
+            sides(ui, gx, 1, 7, "wide (units)");
+            sides(ui, gy, 1, 7, "deep (units)");
+            sides(ui, hu, 2, 20, "tall (×7 mm)");
+            sides(ui, div_x, 1, 12, "compartments across");
+            sides(ui, div_y, 1, 12, "compartments front-to-back");
+            ui.checkbox(magnets, "Magnet holes (6×2 mm)");
+            ui.checkbox(lip, "Stacking lip");
+        }
+        Shape::GridPlate { gx, gy } => {
+            ui.label(RichText::new("Bins snap into the pockets. Glue or screw it into a drawer.").small().weak());
+            sides(ui, gx, 1, 7, "wide (units)");
+            sides(ui, gy, 1, 7, "deep (units)");
+        }
         Shape::FitTest => {
             ui.label(RichText::new("1. Print this (any PLA). 2. Push the peg into each hole. 3. Click the number of the TIGHTEST hole the peg still slides into by hand:").small());
             ui.horizontal_wrapped(|ui| {

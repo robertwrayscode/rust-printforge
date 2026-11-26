@@ -1069,3 +1069,144 @@ impl MovedXY for Mesh {
         moved(self, DVec3::new(x, y, 0.0))
     }
 }
+
+// ---- Gridfinity (Zack Freedman's open modular storage system)
+
+pub const GF_PITCH: f64 = 42.0;
+pub const GF_HU: f64 = 7.0;
+const GF_LIP: f64 = 4.4;
+const GF_FOOT: f64 = 4.75;
+
+/// Closed solid made of rounded-rectangle rings: (z, inset from the w×d outline).
+fn rr_loft(w: f64, d: f64, r: f64, rings: &[(f64, f64)]) -> Mesh {
+    let seg = 8usize; // per corner
+    let ring = |inset: f64| -> Vec<DVec2> {
+        let (hw, hd) = (w / 2.0 - inset, d / 2.0 - inset);
+        let rr = (r - inset).max(0.3).min(hw).min(hd);
+        let mut v = vec![];
+        for (cx, cy, a0) in [(hw - rr, hd - rr, 0.0), (-hw + rr, hd - rr, 90.0), (-hw + rr, -hd + rr, 180.0), (hw - rr, -hd + rr, 270.0)] {
+            for k in 0..=seg {
+                let a = (a0 + 90.0 * k as f64 / seg as f64).to_radians();
+                v.push(DVec2::new(cx + rr * a.cos(), cy + rr * a.sin()));
+            }
+        }
+        v
+    };
+    let mut m = Mesh::new();
+    let mut rows: Vec<Vec<u32>> = vec![];
+    for &(z, inset) in rings {
+        rows.push(ring(inset).into_iter().map(|p| m.add_vert(DVec3::new(p.x, p.y, z))).collect());
+    }
+    let n = rows[0].len();
+    for k in 0..rows.len() - 1 {
+        for j in 0..n {
+            let j2 = (j + 1) % n;
+            m.add_quad(rows[k][j], rows[k][j2], rows[k + 1][j2], rows[k + 1][j]);
+        }
+    }
+    let (b, t) = (&rows[0], &rows[rows.len() - 1]);
+    let zb = rings[0].0;
+    let zt = rings[rings.len() - 1].0;
+    let cb = m.add_vert(DVec3::new(0.0, 0.0, zb));
+    let ct = m.add_vert(DVec3::new(0.0, 0.0, zt));
+    for j in 0..n {
+        let j2 = (j + 1) % n;
+        m.add_tri(cb, b[j2], b[j]);
+        m.add_tri(ct, t[j], t[j2]);
+    }
+    m.weld(1e-9);
+    orient_outward(&mut m);
+    m
+}
+
+/// A Gridfinity bin: `gx`×`gy` grid units, `hu` height units (7 mm each), optional
+/// compartments, magnet holes and stacking lip.
+pub fn gridfinity_bin(gx: u32, gy: u32, hu: u32, div_x: u32, div_y: u32, magnets: bool, lip: bool) -> Mesh {
+    let (gx, gy, hu) = (gx.clamp(1, 7), gy.clamp(1, 7), hu.clamp(2, 20));
+    let (w, d) = (GF_PITCH * gx as f64 - 0.5, GF_PITCH * gy as f64 - 0.5);
+    let r = 3.75;
+    let h = GF_HU * hu as f64;
+    let wall = 1.2;
+    let floor = GF_FOOT + 1.2;
+    let mut parts = vec![];
+    // feet, one per grid cell
+    for i in 0..gx {
+        for j in 0..gy {
+            let cx = -w / 2.0 + 20.75 + GF_PITCH * i as f64;
+            let cy = -d / 2.0 + 20.75 + GF_PITCH * j as f64;
+            let foot = rr_loft(41.5, 41.5, 3.75, &[(0.0, 2.9), (0.8, 2.15), (2.6, 2.15), (GF_FOOT + 0.01, 0.0)]);
+            parts.push(moved(foot, DVec3::new(cx, cy, 0.0)));
+        }
+    }
+    let top = if lip { h + GF_LIP } else { h };
+    parts.push(rr_loft(w, d, r, &[(GF_FOOT, 0.0), (top, 0.0)]));
+    let body = union(parts);
+    let mut cuts = vec![];
+    // inside: straight up to the lip, then the stacking profile (with a 45° shelf under it)
+    let cav = if lip {
+        rr_loft(w, d, r, &[(floor, wall), (h - 2.6, wall), (h, 3.2), (h + 2.5, 1.3), (h + GF_LIP - 0.7, 1.3), (h + GF_LIP + 0.01, 0.6), (h + GF_LIP + 1.0, 0.6)])
+    } else {
+        rr_loft(w, d, r, &[(floor, wall), (h + 1.0, wall)])
+    };
+    cuts.push(cav);
+    if magnets {
+        for i in 0..gx {
+            for j in 0..gy {
+                let cx = -w / 2.0 + 20.75 + GF_PITCH * i as f64;
+                let cy = -d / 2.0 + 20.75 + GF_PITCH * j as f64;
+                for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                    cuts.push(cyl_z(cx + 13.0 * sx, cy + 13.0 * sy, 3.25, -1.0, 2.4, 32));
+                }
+            }
+        }
+    }
+    let mut out = cut(body, cuts);
+    // compartment walls
+    let (dx, dy) = (div_x.clamp(1, 12), div_y.clamp(1, 12));
+    let mut walls = vec![];
+    let (iw, id) = (w - 2.0 * wall, d - 2.0 * wall);
+    let wh = if lip { h - 2.0 } else { h };
+    for k in 1..dx {
+        let x = -iw / 2.0 + iw * k as f64 / dx as f64;
+        walls.push(cube(DVec3::new(x - 0.6, -id / 2.0 - 0.1, floor - 0.01), DVec3::new(x + 0.6, id / 2.0 + 0.1, wh)));
+    }
+    for k in 1..dy {
+        let y = -id / 2.0 + id * k as f64 / dy as f64;
+        walls.push(cube(DVec3::new(-iw / 2.0 - 0.1, y - 0.6, floor - 0.01), DVec3::new(iw / 2.0 + 0.1, y + 0.6, wh)));
+    }
+    if !walls.is_empty() {
+        walls.push(out);
+        out = union(walls);
+    }
+    out
+}
+
+pub fn gridfinity_bin_size(gx: u32, gy: u32, hu: u32, lip: bool) -> DVec3 {
+    DVec3::new(GF_PITCH * gx.clamp(1, 7) as f64 - 0.5, GF_PITCH * gy.clamp(1, 7) as f64 - 0.5, GF_HU * hu.clamp(2, 20) as f64 + if lip { GF_LIP } else { 0.0 })
+}
+
+/// Open-frame Gridfinity baseplate, `gx`×`gy` cells (42 mm each).
+pub fn gridfinity_baseplate(gx: u32, gy: u32) -> Mesh {
+    let (gx, gy) = (gx.clamp(1, 7), gy.clamp(1, 7));
+    let (w, d) = (GF_PITCH * gx as f64, GF_PITCH * gy as f64);
+    // pocket = negative of a bin foot: 2.15 mm chamfer at the top, 1.8 mm straight, 0.7 mm chamfer.
+    // The plate top sits 0.4 mm below the ideal knife-edge so the ridges are printable
+    // (0.8 mm), and a 0.5 mm border keeps the outer rim sturdy.
+    let h = 5.0;
+    let plate = rr_loft(w + 1.0, d + 1.0, 4.5, &[(0.0, 0.0), (h - 0.5, 0.0)]);
+    let mut cuts = vec![];
+    for i in 0..gx {
+        for j in 0..gy {
+            let cx = -w / 2.0 + 21.0 + GF_PITCH * i as f64;
+            let cy = -d / 2.0 + 21.0 + GF_PITCH * j as f64;
+            // pocket: the foot's shape, slightly roomier, open at the bottom
+            let p = rr_loft(42.0, 42.0, 4.0, &[(-1.0, 2.85), (h - 4.65, 2.85), (h - 3.95, 2.15), (h - 2.15, 2.15), (h + 0.01, -0.01), (h + 1.0, -0.01)]);
+            cuts.push(moved(p, DVec3::new(cx, cy, 0.0)));
+        }
+    }
+    cut(plate, cuts)
+}
+
+pub fn gridfinity_baseplate_size(gx: u32, gy: u32) -> DVec3 {
+    DVec3::new(GF_PITCH * gx.clamp(1, 7) as f64 + 1.0, GF_PITCH * gy.clamp(1, 7) as f64 + 1.0, 4.5)
+}
