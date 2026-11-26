@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.5.1 — 2026-11-25
+- **👁 See-through** button (top bar, or press X): every part turns see-through with its sharp
+  edges outlined, so you can look inside — check a hole you cut, a hollow, or a hidden cavity.
+  Press it again to go back to normal.
+- The **Home** view button now also zooms to fit everything on the plate.
+
 ## 0.5.0 — 2026-11-25
 - **Sketch tool** (✏ Sketch on the toolbar, File menu, or the Shapes panel): draw your own outline
   on a millimetre grid, then

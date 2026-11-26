@@ -237,6 +237,8 @@ pub struct App {
     last_autosave: std::time::Instant,
     recover_offer: bool,
     show_overhangs: bool,
+    xray: bool,
+    xray_edges: HashMap<u64, Arc<Vec<(Vec3, Vec3)>>>,
     bands: Vec<(f64, u8)>,
     printable_report: Option<Vec<String>>,
     resize: Option<ResizeDrag>,
@@ -317,6 +319,8 @@ impl App {
             last_autosave: std::time::Instant::now(),
             recover_offer: crate::settings::autosave_path().map(|p| p.exists()).unwrap_or(false),
             show_overhangs: false,
+            xray: false,
+            xray_edges: HashMap::new(),
             bands: vec![(0.0, 0), (5.0, 2)],
             printable_report: None,
             resize: None,
@@ -1378,6 +1382,10 @@ impl App {
             self.entries.push(Entry { id: o.id, key, hole: o.hole, mesh, bvh });
         }
         self.cache.gc();
+        if self.xray_edges.len() > 256 {
+            let keep: std::collections::HashSet<u64> = self.entries.iter().map(|e| e.key).collect();
+            self.xray_edges.retain(|k, _| keep.contains(k));
+        }
         self.rebuild_batches();
     }
 
@@ -1397,7 +1405,19 @@ impl App {
                 } else {
                     let ci = e.mesh.colors[t];
                     let col = fil.get(ci as usize).map(|f| f.color).unwrap_or([200, 200, 200]);
-                    solid.tri(a, b, c, rgba(col, 1.0));
+                    if self.xray {
+                        holes.tri(a, b, c, rgba(col, 0.28));
+                    } else {
+                        solid.tri(a, b, c, rgba(col, 1.0));
+                    }
+                }
+            }
+            if self.xray && !e.hole {
+                // crisp outlines of the sharp edges so the see-through shape stays readable
+                let edges = self.xray_edges.entry(e.key).or_insert_with(|| Arc::new(feature_edges(&e.mesh))).clone();
+                let col = if sel { [0.35, 0.65, 1.0, 0.95] } else { [0.85, 0.88, 0.95, 0.55] };
+                for &(a, b) in edges.iter() {
+                    lines.line(a, b, col);
                 }
             }
             if sel {
@@ -1862,6 +1882,10 @@ impl App {
                 }
             if ui.button("✨ Make it printable").on_hover_text("Turn parts onto their best face, put everything on the plate, spread parts out, then check").clicked() {
                 self.make_printable();
+            }
+            if ui.selectable_label(self.xray, "👁 See-through").on_hover_text("Make every part see-through so you can look inside — e.g. to check a hole you cut (X)").clicked() {
+                self.xray = !self.xray;
+                self.geometry_dirty = true;
             }
             if ui.selectable_label(self.show_overhangs, "Overhangs").on_hover_text("Show faces that will need support (orange)").clicked() {
                 self.show_overhangs = !self.show_overhangs;
@@ -3068,6 +3092,7 @@ impl App {
             }
         }
         // view cube-ish buttons
+        let mut go_home = false;
         let area = Rect::from_min_size(rect.right_top() + Vec2::new(-190.0, 8.0), Vec2::new(182.0, 26.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
             ui.horizontal(|ui| {
@@ -3075,10 +3100,16 @@ impl App {
                     if ui.small_button(n).clicked() {
                         self.camera.yaw = y;
                         self.camera.pitch = p;
+                        if n == "Home" {
+                            go_home = true;
+                        }
                     }
                 }
             });
         });
+        if go_home && !self.doc.objects.is_empty() {
+            self.fit_view(false);
+        }
         if self.doc.objects.is_empty() {
             painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click a shape on the left to begin", egui::FontId::proportional(20.0), crate::theme::hint());
         }
@@ -3480,6 +3511,10 @@ impl App {
             }
             if i.consume_key(egui::Modifiers::NONE, Key::F) {
                 self.fit_view(true);
+            }
+            if i.consume_key(egui::Modifiers::NONE, Key::X) {
+                self.xray = !self.xray;
+                self.geometry_dirty = true;
             }
             if i.consume_key(egui::Modifiers::NONE, Key::P) {
                 self.tool = Tool::Paint;
@@ -3984,4 +4019,25 @@ impl App {
         self.screenshot = Some((path, frame + 1));
         ctx.request_repaint();
     }
+}
+
+/// Edges where the surface bends sharply (> ~25°), plus open edges.
+fn feature_edges(m: &Mesh) -> Vec<(Vec3, Vec3)> {
+    if m.tris.len() > 400_000 {
+        return vec![];
+    }
+    let nb = m.tri_neighbors();
+    let normals: Vec<DVec3> = (0..m.tris.len()).map(|t| m.tri_normal_area(t).0).collect();
+    let mut out = vec![];
+    for (i, t) in m.tris.iter().enumerate() {
+        for k in 0..3 {
+            let j = nb[i][k];
+            let sharp = j == u32::MAX || ((j as usize) > i && normals[i].dot(normals[j as usize]) < 0.9);
+            if sharp && (j == u32::MAX || (j as usize) > i) {
+                let (a, b) = (m.verts[t[k] as usize], m.verts[t[(k + 1) % 3] as usize]);
+                out.push((a.as_vec3(), b.as_vec3()));
+            }
+        }
+    }
+    out
 }
