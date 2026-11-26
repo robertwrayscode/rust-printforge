@@ -156,6 +156,29 @@ fn line_param(o: DVec3, dir: DVec3, ro: DVec3, rd: DVec3) -> f64 {
     if den.abs() < 1e-9 { 0.0 } else { (b * e - d) / den }
 }
 
+struct AiPanel {
+    open: bool,
+    settings: crate::ai::AiSettings,
+    show_settings: bool,
+    /// what the user sees: (from user?, text)
+    shown: Vec<(bool, String)>,
+    /// what the model sees
+    history: Vec<crate::ai::Msg>,
+    input: String,
+    rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    test_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    test_result: String,
+    started: Option<std::time::Instant>,
+}
+
+impl Default for AiPanel {
+    fn default() -> Self {
+        let settings = crate::ai::AiSettings::load();
+        let show_settings = crate::settings::get("ai_url").is_empty();
+        Self { open: false, settings, show_settings, shown: vec![], history: vec![], input: String::new(), rx: None, test_rx: None, test_result: String::new(), started: None }
+    }
+}
+
 struct PreviewState {
     meshes: Vec<Mesh>,
     est: crate::preview::Estimate,
@@ -242,6 +265,7 @@ pub struct App {
     img_dialog: Option<ImgDialog>,
     sketch: Option<crate::sketch::SketchEditor>,
     my_fils: Option<Vec<Filament>>,
+    ai: AiPanel,
     decal: Option<crate::decal::Decal>,
     decal_tex: Option<egui::TextureHandle>,
     svg_dialog: Option<SvgDialog>,
@@ -326,6 +350,7 @@ impl App {
             img_dialog: None,
             sketch: None,
             my_fils: None,
+            ai: AiPanel::default(),
             decal: None,
             decal_tex: None,
             svg_dialog: None,
@@ -1089,6 +1114,7 @@ impl App {
 
     fn picture_windows(&mut self, ctx: &egui::Context) {
         self.sketch_window(ctx);
+        self.ai_window(ctx);
         self.my_filaments_window(ctx);
         use crate::imaging::ImageMode;
         let mut close_img = false;
@@ -1848,6 +1874,202 @@ impl App {
         }
     }
 
+    fn ai_send(&mut self, ctx: &egui::Context) {
+        let text = self.ai.input.trim().to_string();
+        if text.is_empty() || self.ai.rx.is_some() {
+            return;
+        }
+        self.ai.input.clear();
+        self.ai.shown.push((true, text.clone()));
+        self.ai.history.push(crate::ai::Msg { user: true, text });
+        let keep = self.ai.history.len().saturating_sub(10);
+        let history: Vec<crate::ai::Msg> = self.ai.history[keep..].to_vec();
+        let system = crate::ai::system_prompt(&self.doc, &self.selection);
+        let settings = self.ai.settings.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx2 = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::ai::chat(&settings, &system, &history));
+            ctx2.request_repaint();
+        });
+        self.ai.rx = Some(rx);
+        self.ai.started = Some(std::time::Instant::now());
+    }
+
+    fn ai_poll(&mut self) {
+        if let Some(rx) = &self.ai.test_rx {
+            if let Ok(r) = rx.try_recv() {
+                self.ai.test_result = match r {
+                    Ok(s) => format!("✔ {s}"),
+                    Err(e) => format!("✖ {e}"),
+                };
+                self.ai.test_rx = None;
+            }
+        }
+        let Some(rx) = &self.ai.rx else { return };
+        let Ok(r) = rx.try_recv() else { return };
+        self.ai.rx = None;
+        match r {
+            Err(e) => {
+                self.ai.history.pop();
+                self.ai.shown.push((false, format!("⚠ {e}")));
+            }
+            Ok(reply) => {
+                let raw: String = reply.chars().take(6000).collect();
+                match crate::ai::extract_json(&reply) {
+                    Some(plan) if plan["actions"].as_array().map(|a| !a.is_empty()).unwrap_or(false) => {
+                        let r = crate::ai::apply(&plan, &mut self.doc, &mut self.cache);
+                        let mut msg = if r.say.is_empty() { "Done.".to_string() } else { r.say.clone() };
+                        if !r.problems.is_empty() {
+                            msg.push_str(&format!("\n(Skipped: {})", r.problems.join("; ")));
+                        }
+                        msg.push_str("\nNot right? Ctrl+Z undoes it, or tell me what to change.");
+                        self.ai.shown.push((false, msg));
+                        self.ai.history.push(crate::ai::Msg { user: false, text: raw });
+                        if !r.changed.is_empty() {
+                            self.selection = r.changed.clone();
+                        }
+                        self.touch();
+                        self.status = "AI helper changed the design.".into();
+                    }
+                    Some(plan) => {
+                        let say = plan["say"].as_str().unwrap_or("(no changes)").to_string();
+                        self.ai.shown.push((false, say));
+                        self.ai.history.push(crate::ai::Msg { user: false, text: raw });
+                    }
+                    None => {
+                        let t: String = reply.trim().chars().take(600).collect();
+                        self.ai.shown.push((false, format!("{t}\n\n(The AI didn't send a plan RoboForge can build. Try rephrasing, or a bigger model.)")));
+                        self.ai.history.push(crate::ai::Msg { user: false, text: raw });
+                    }
+                }
+            }
+        }
+    }
+
+    fn ai_window(&mut self, ctx: &egui::Context) {
+        self.ai_poll();
+        if !self.ai.open {
+            return;
+        }
+        let mut open = true;
+        let mut send = false;
+        let mut test = false;
+        egui::Window::new("✨ AI helper").open(&mut open).default_width(400.0).default_pos([300.0, 120.0]).resizable(true).show(ctx, |ui| {
+            let busy = self.ai.rx.is_some();
+            ui.horizontal(|ui| {
+                let who = match self.ai.settings.provider {
+                    crate::ai::Provider::OpenAi => format!("Local / OpenAI-style · {}", if self.ai.settings.model.is_empty() { "default model" } else { &self.ai.settings.model }),
+                    crate::ai::Provider::Anthropic => format!("Claude · {}", if self.ai.settings.model.is_empty() { "claude-sonnet-5-5" } else { &self.ai.settings.model }),
+                };
+                ui.label(RichText::new(who).small().weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button(if self.ai.show_settings { "Hide settings" } else { "⚙ Settings" }).clicked() {
+                        self.ai.show_settings = !self.ai.show_settings;
+                    }
+                    if ui.small_button("New chat").on_hover_text("Forget the conversation (the design stays)").clicked() {
+                        self.ai.shown.clear();
+                        self.ai.history.clear();
+                    }
+                });
+            });
+            if self.ai.show_settings {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    let st = &mut self.ai.settings;
+                    ui.horizontal(|ui| {
+                        if ui.radio_value(&mut st.provider, crate::ai::Provider::OpenAi, "Local model (llama.cpp, Ollama, LM Studio…)").clicked() && st.url.contains("anthropic") {
+                            st.url = "http://localhost:8080/v1".into();
+                        }
+                    });
+                    ui.radio_value(&mut st.provider, crate::ai::Provider::Anthropic, "Claude (Anthropic API key)");
+                    egui::Grid::new("ai_set").num_columns(2).show(ui, |ui| {
+                        if st.provider == crate::ai::Provider::OpenAi {
+                            ui.label("Address");
+                            ui.add(egui::TextEdit::singleline(&mut st.url).desired_width(240.0)).on_hover_text("llama.cpp server: http://localhost:8080/v1 · Ollama: http://localhost:11434/v1 · LM Studio: http://localhost:1234/v1 · another PC: use its IP");
+                            ui.end_row();
+                        }
+                        ui.label("Model");
+                        ui.add(egui::TextEdit::singleline(&mut st.model).desired_width(240.0).hint_text(if st.provider == crate::ai::Provider::Anthropic { "claude-sonnet-5-5" } else { "blank = whatever is loaded" }));
+                        ui.end_row();
+                        ui.label("Key");
+                        ui.add(egui::TextEdit::singleline(&mut st.key).password(true).desired_width(240.0).hint_text(if st.provider == crate::ai::Provider::Anthropic { "sk-ant-…" } else { "usually blank for local" }));
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.add_enabled(self.ai.test_rx.is_none(), egui::Button::new("Save & test connection")).clicked() {
+                            test = true;
+                        }
+                        if self.ai.test_rx.is_some() {
+                            ui.spinner();
+                        }
+                    });
+                    if !self.ai.test_result.is_empty() {
+                        ui.label(RichText::new(&self.ai.test_result).small());
+                    }
+                    ui.label(RichText::new("Settings (including the key) are stored on this computer only.").small().weak());
+                });
+            }
+            egui::ScrollArea::vertical().max_height(300.0).stick_to_bottom(true).show(ui, |ui| {
+                if self.ai.shown.is_empty() {
+                    ui.label(RichText::new("Try: \"a 60 mm box with a hinged lid and ROBERT raised on top in blue\", \"a phone stand with my name on the front\", or \"make the selected part 10 mm taller\".").weak());
+                }
+                for (user, t) in &self.ai.shown {
+                    let (bg, al) = if *user { (crate::theme::accent().gamma_multiply(0.25), egui::Align::Max) } else { (Color32::from_gray(45), egui::Align::Min) };
+                    ui.with_layout(egui::Layout::top_down(al), |ui| {
+                        egui::Frame::new().fill(bg).corner_radius(6.0).inner_margin(6.0).show(ui, |ui| {
+                            ui.set_max_width(320.0);
+                            ui.label(t);
+                        });
+                    });
+                    ui.add_space(4.0);
+                }
+                if busy {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        let secs = self.ai.started.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+                        ui.label(RichText::new(format!("Thinking… {secs}s (local models can take a minute)")).weak());
+                    });
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let r = ui.add_enabled(!busy, egui::TextEdit::multiline(&mut self.ai.input).desired_rows(2).desired_width(ui.available_width() - 60.0).hint_text("Describe what to make or change…"));
+                if r.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift) {
+                    // Enter sends, Shift+Enter makes a new line
+                    if self.ai.input.ends_with('\n') {
+                        self.ai.input.pop();
+                    }
+                    send = true;
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Send")).clicked() {
+                    send = true;
+                }
+            });
+        });
+        if test {
+            self.ai.settings.save();
+            let st = self.ai.settings.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let c2 = ctx.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::ai::test(&st));
+                c2.request_repaint();
+            });
+            self.ai.test_rx = Some(rx);
+            self.ai.test_result.clear();
+        }
+        if send {
+            self.ai.settings.save();
+            self.ai_send(ctx);
+        }
+        if self.ai.rx.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        if !open {
+            self.ai.open = false;
+        }
+    }
+
     fn sketch_window(&mut self, ctx: &egui::Context) {
         let Some(ed) = &mut self.sketch else { return };
         match ed.show(ctx) {
@@ -2168,6 +2390,9 @@ impl App {
             ui.selectable_value(&mut tool, Tool::SnapFaces, "Snap faces");
             ui.selectable_value(&mut tool, Tool::PushPull, "Push/Pull");
             ui.selectable_value(&mut tool, Tool::Measure, "Measure");
+            if ui.selectable_label(self.ai.open, "✨ AI helper").on_hover_text("Describe what you want and an AI builds it (your local model or Claude)").clicked() {
+                self.ai.open = !self.ai.open;
+            }
             if ui.button("✏ Sketch").on_hover_text("Draw your own outline, then push it up or spin it into a 3D part").clicked() {
                 self.sketch = Some(crate::sketch::SketchEditor::new());
             }

@@ -64,6 +64,7 @@ own settings in the Inspector:
 
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
+- **AI helper:** describe a design in plain English; your local model (llama.cpp/Ollama/LM Studio) or Claude builds it from RoboForge parts.
 - **Filament types & My Filaments:** Bambu's H2C presets per filament (PLA, PETG, ABS, ASA, TPU…), hex colour codes, and a saved spool library.
 - **Print preview:** layer slider plus print time, grams per colour and colour-change estimates.
 - **See-through view** (X): look inside parts to check holes and hollows.

@@ -2,6 +2,17 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.7.0 — 2026-11-26
+- **✨ AI helper** (tools bar): describe what you want — "a 60 mm box with a lid and ROBERT
+  raised on top in blue", "make the selected part 10 mm taller" — and an AI model builds it.
+  - Works with your own local model through any OpenAI-style server (llama.cpp, Ollama,
+    LM Studio, vLLM…) or with Claude using an Anthropic API key. Set the address/model in
+    ⚙ Settings and click "Save & test connection".
+  - The AI doesn't draw triangles: it sends a plan made of RoboForge's own shapes and parts
+    (sizes, positions, colours, settings, holes, groups), so the result is always clean and
+    printable. It sees what's on the plate and what you've selected, so you can keep refining.
+  - Ctrl+Z undoes anything it did. Reasoning models' "thinking" is ignored automatically.
+
 ## 0.6.2 — 2026-11-26
 - **▶ Print** button (top right, or Ctrl+P / Cmd+P): checks the design, saves it to RoboForge's
   Prints folder and opens it straight in Bambu Studio — just press Slice plate, then Print.
