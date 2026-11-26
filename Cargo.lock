@@ -2385,8 +2385,9 @@ dependencies = [
 
 [[package]]
 name = "roboforge"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
+ "arboard",
  "boolmesh",
  "earcutr",
  "eframe",

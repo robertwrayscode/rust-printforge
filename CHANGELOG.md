@@ -2,6 +2,10 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.7.2 — 2026-11-26
+- AI helper's text box: **right-click → Paste / Copy all / Clear**, and a backup for Ctrl+V that
+  reads the clipboard directly if Windows doesn't deliver the paste.
+
 ## 0.7.1 — 2026-11-26
 - **Make it printable** now spots a lid or jar cap sitting on its box/jar and moves it (with any
   raised text on it) onto the plate beside it, so they print as separate pieces instead of fused.

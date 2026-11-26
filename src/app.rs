@@ -2099,7 +2099,37 @@ impl App {
             });
             ui.separator();
             ui.horizontal(|ui| {
-                let r = ui.add_enabled(!busy, egui::TextEdit::multiline(&mut self.ai.input).desired_rows(2).desired_width(ui.available_width() - 60.0).hint_text("Describe what to make or change…"));
+                let r = ui.add_enabled(!busy, egui::TextEdit::multiline(&mut self.ai.input).desired_rows(2).desired_width(ui.available_width() - 60.0).hint_text("Describe what to make or change… (Ctrl+V or right-click to paste)"));
+                // Ctrl+V backup: if the system paste event didn't arrive, read the clipboard ourselves
+                if r.has_focus() {
+                    let (ctrl_v, got_paste) = ui.input(|i| {
+                        (
+                            i.events.iter().any(|e| matches!(e, egui::Event::Key { key: Key::V, pressed: true, modifiers, .. } if modifiers.command)),
+                            i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
+                        )
+                    });
+                    if ctrl_v && !got_paste {
+                        if let Some(t) = clipboard_text() {
+                            self.ai.input.push_str(&t);
+                        }
+                    }
+                }
+                r.context_menu(|ui| {
+                    if ui.button("Paste").clicked() {
+                        if let Some(t) = clipboard_text() {
+                            self.ai.input.push_str(&t);
+                        }
+                        ui.close();
+                    }
+                    if ui.button("Copy all").clicked() {
+                        ui.ctx().copy_text(self.ai.input.clone());
+                        ui.close();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.ai.input.clear();
+                        ui.close();
+                    }
+                });
                 if r.has_focus() && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift) {
                     // Enter sends, Shift+Enter makes a new line
                     if self.ai.input.ends_with('\n') {
@@ -4666,4 +4696,11 @@ fn feature_edges(m: &Mesh) -> Vec<(Vec3, Vec3)> {
         }
     }
     out
+}
+
+/// Text on the system clipboard (used by the right-click Paste and as a Ctrl+V backup).
+fn clipboard_text() -> Option<String> {
+    let t = arboard::Clipboard::new().ok()?.get_text().ok()?;
+    let t = t.replace("\r\n", "\n");
+    (!t.is_empty()).then_some(t)
 }
