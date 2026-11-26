@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.9.1 — 2026-11-26
+- **Round / bevel edges** for any solid part (Inspector → "Round / bevel edges"): pick Round or
+  Bevel and a size, then "Apply to all sharp outside edges". Works on boxes, text, groups,
+  imported models and sketches; box corners get proper ball-shaped rounds. By default the edges
+  sitting on the plate stay sharp (rounded bottoms print as overhangs). Colours are kept.
+
 ## 0.9.0 — 2026-11-26
 - **Gridfinity** (Home & storage), Zack Freedman's open modular drawer system:
   - **Gridfinity bin**: 1–7 × 1–7 grid units (42 mm) and 2–20 height units (7 mm), compartments

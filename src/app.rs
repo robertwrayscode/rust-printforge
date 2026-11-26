@@ -273,6 +273,10 @@ pub struct App {
     recover_offer: bool,
     show_overhangs: bool,
     xray: bool,
+    edge_radius: f64,
+    edge_chamfer: bool,
+    edge_skip_bottom: bool,
+    edge_apply: Option<u64>,
     preview: Option<PreviewState>,
     xray_edges: HashMap<u64, Arc<Vec<(Vec3, Vec3)>>>,
     bands: Vec<(f64, u8)>,
@@ -358,6 +362,10 @@ impl App {
             recover_offer: crate::settings::autosave_path().map(|p| p.exists()).unwrap_or(false),
             show_overhangs: false,
             xray: false,
+            edge_radius: 2.0,
+            edge_chamfer: false,
+            edge_skip_bottom: true,
+            edge_apply: None,
             preview: None,
             xray_edges: HashMap::new(),
             bands: vec![(0.0, 0), (5.0, 2)],
@@ -2181,6 +2189,29 @@ impl App {
         }
     }
 
+    fn apply_edges(&mut self, id: u64) {
+        let Some(o) = self.doc.find(id).cloned() else { return };
+        let mut wm = self.cache.world_mesh(&o);
+        wm.fill_unset_color(o.color);
+        let opts = crate::edges::EdgeOptions { radius: self.edge_radius, chamfer: self.edge_chamfer, skip_bottom: self.edge_skip_bottom, min_angle: 30.0 };
+        match crate::edges::round_edges(&wm, &opts) {
+            Ok(mut m) => {
+                let inv = o.transform().inverse();
+                for v in &mut m.verts {
+                    *v = inv.transform_point3(*v);
+                }
+                crate::shapes::orient_outward(&mut m);
+                if let Some(ob) = self.doc.find_mut(id) {
+                    ob.kind = Kind::Mesh(Arc::new(m));
+                    ob.paint = None;
+                }
+                self.touch();
+                self.status = format!("{} edges of '{}' by {:.1} mm.", if self.edge_chamfer { "Bevelled" } else { "Rounded" }, o.name, self.edge_radius);
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
     fn sketch_window(&mut self, ctx: &egui::Context) {
         let Some(ed) = &mut self.sketch else { return };
         match ed.show(ctx) {
@@ -2839,6 +2870,9 @@ impl App {
             }
             if self.tool == Tool::Select || !self.selection.is_empty() {
                 self.inspector(ui);
+                if let Some(id) = self.edge_apply.take() {
+                    self.apply_edges(id);
+                }
             }
             ui.separator();
             self.check_panel(ui);
@@ -2985,6 +3019,20 @@ impl App {
         }
         if open_sketch.is_some() {
             self.sketch = open_sketch;
+        }
+        if !o.hole {
+            egui::CollapsingHeader::new("Round / bevel edges").id_salt("edges_hdr").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.edge_chamfer, false, "Round");
+                    ui.radio_value(&mut self.edge_chamfer, true, "Bevel");
+                    ui.add(egui::DragValue::new(&mut self.edge_radius).range(0.2..=20.0).speed(0.1).suffix(" mm"));
+                });
+                ui.checkbox(&mut self.edge_skip_bottom, "Keep edges on the plate sharp").on_hover_text("Rounded bottom edges print as overhangs; a bevel there is fine");
+                if ui.button("Apply to all sharp outside edges").clicked() {
+                    self.edge_apply = Some(o.id);
+                }
+                ui.label(RichText::new("The part becomes a mesh, so its shape settings no longer apply. Ctrl+Z undoes it.").small().weak());
+            });
         }
         ui.separator();
         ui.label(RichText::new("Size (mm)").strong());
