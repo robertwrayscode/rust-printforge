@@ -465,7 +465,10 @@ impl App {
 
     pub fn add_shape(&mut self, info_idx: usize) {
         let info = &LIBRARY[info_idx];
-        let shape = (info.shape)();
+        let mut shape = (info.shape)();
+        if let Some(g) = crate::settings::fit_gap() {
+            shape.apply_fit(g);
+        }
         let mut size = DVec3::from(info.default_size);
         if let Some(a) = shape.text_aspect() {
             size.x = size.y * a;
@@ -481,7 +484,13 @@ impl App {
         self.selection = vec![id];
         if is_container {
             let lid_id = self.doc.alloc_id();
-            let mut l = Object::new(lid_id, "Lid", Kind::Shape(Shape::Lid { wall: 2.0, lip: 4.0, clearance: 0.25, radius: 4.0 }), DVec3::new(cw.x, cw.y, 6.0));
+            let mut l = Object::new(lid_id, "Lid", Kind::Shape({
+                let mut l = Shape::Lid { wall: 2.0, lip: 4.0, clearance: 0.25, radius: 4.0 };
+                if let Some(g) = crate::settings::fit_gap() {
+                    l.apply_fit(g);
+                }
+                l
+            }), DVec3::new(cw.x, cw.y, 6.0));
             l.pos = cpos + DVec3::new(0.0, cw.y + 8.0, 0.0);
             l.color = 0;
             self.doc.objects.push(l);
@@ -490,7 +499,13 @@ impl App {
         if is_jar {
             let cap_id = self.doc.alloc_id();
             let cs = crate::parts::jar_cap_size(cw.x, cw.z);
-            let mut c = Object::new(cap_id, "Jar cap", Kind::Shape(Shape::JarCap { clearance: 0.4 }), cs);
+            let mut c = Object::new(cap_id, "Jar cap", Kind::Shape({
+                let mut c = Shape::JarCap { clearance: 0.4 };
+                if let Some(g) = crate::settings::fit_gap() {
+                    c.apply_fit(g);
+                }
+                c
+            }), cs);
             c.pos = cpos + DVec3::new(cw.x / 2.0 + cs.x / 2.0 + 8.0, 0.0, 0.0);
             c.color = 0;
             self.doc.objects.push(c);
@@ -4520,6 +4535,22 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.add(egui::Slider::new(clearance, 0.1..=1.0).text("thread clearance (mm)"));
         }
         Shape::PegHook | Shape::KeyholePlate | Shape::Saucer => {}
+        Shape::FitTest => {
+            ui.label(RichText::new("1. Print this (any PLA). 2. Push the peg into each hole. 3. Click the number of the TIGHTEST hole the peg still slides into by hand:").small());
+            ui.horizontal_wrapped(|ui| {
+                let cur = crate::settings::fit_gap();
+                for (i, g) in crate::parts::FIT_GAPS.iter().enumerate() {
+                    let on = cur.map(|c| (c - g).abs() < 0.01).unwrap_or(false);
+                    if ui.selectable_label(on, format!(" {} ", i + 1)).on_hover_text(format!("{g:.1} mm gap")).clicked() {
+                        crate::settings::set_fit_gap(*g);
+                    }
+                }
+            });
+            match crate::settings::fit_gap() {
+                Some(g) => ui.label(RichText::new(format!("Saved: {g:.1} mm. New lids, caps, nuts, hinges and dovetails use it automatically.")).small().color(Color32::from_rgb(110, 200, 130))),
+                None => ui.label(RichText::new("Not set yet — parts use RoboForge's defaults (0.2 mm).").small().weak()),
+            };
+        }
         Shape::Sketch { spin, height, sides: n, wall, floor, .. } => {
             if *spin {
                 sides(ui, n, 8, 256, "smoothness");

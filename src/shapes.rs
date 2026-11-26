@@ -60,6 +60,7 @@ pub enum Shape {
     KeyTag { hole: f64 },
     Jar { wall: f64 },
     JarCap { clearance: f64 },
+    FitTest,
     /// Drawn outline (mm), extruded up or spun round the Y axis.
     Sketch {
         pts: Vec<[f64; 2]>,
@@ -121,6 +122,7 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Hardware", name: "Nut", shape: || Shape::Nut { diameter: 8.0, clearance: 0.25 }, default_size: [15.70393, 13.6, 6.4] },
     ShapeInfo { category: "Hardware", name: "Hinge", shape: || Shape::Hinge { knuckles: 5, clearance: 0.3 }, default_size: [40.0, 30.0, 6.0] },
     ShapeInfo { category: "Hardware", name: "Snap hook", shape: || Shape::SnapHook { arm: 1.4, catch: 1.0 }, default_size: [6.0, 8.0, 15.0] },
+    ShapeInfo { category: "Hardware", name: "Fit test", shape: || Shape::FitTest, default_size: [100.0, 26.0, 12.0] },
     ShapeInfo { category: "Hardware", name: "Washer", shape: || Shape::Washer { hole: 8.4 }, default_size: [16.0, 16.0, 1.6] },
     ShapeInfo { category: "Hardware", name: "Standoff", shape: || Shape::Standoff { hole: 3.2 }, default_size: [7.0, 7.0, 10.0] },
     ShapeInfo { category: "Hardware", name: "Pulley", shape: || Shape::Pulley { bore: 5.0, groove: 3.0 }, default_size: [30.0, 30.0, 10.0] },
@@ -201,6 +203,7 @@ impl Shape {
             Shape::KeyTag { .. } => "Key tag",
             Shape::Jar { .. } => "Screw jar",
             Shape::JarCap { .. } => "Jar cap",
+            Shape::FitTest => "Fit test",
             Shape::Sketch { spin: true, .. } => "Sketch (spun)",
             Shape::Sketch { .. } => "Sketch",
         }
@@ -393,12 +396,25 @@ impl Shape {
             Shape::KeyTag { hole } => key_tag(size, *hole),
             Shape::Jar { wall } => jar(size, *wall),
             Shape::JarCap { clearance } => jar_cap(size, *clearance),
+            Shape::FitTest => fit_test(size),
             Shape::Sketch { pts, round, spin, height, sides, wall, floor } => crate::sketch::build_hollow(pts, round, *spin, *height, *sides, *wall, *floor),
             _ => return None,
         })
     }
 
     /// Natural aspect for text so new text objects aren't squashed.
+    /// Adjust this part's fit gap for the printer: `fit` is the gap the user's Fit test print
+    /// liked (the parts' defaults are tuned for 0.2 mm).
+    pub fn apply_fit(&mut self, fit: f64) {
+        let d = fit - 0.2;
+        match self {
+            Shape::Lid { clearance, .. } | Shape::Nut { clearance, .. } | Shape::Hinge { clearance, .. } | Shape::Dovetail { clearance } | Shape::JarCap { clearance } => {
+                *clearance = (*clearance + d).clamp(0.05, 1.0);
+            }
+            _ => {}
+        }
+    }
+
     pub fn text_aspect(&self) -> Option<f64> {
         if let Shape::Text { text, font, spacing } = self {
             let polys = text_polygons(text, *font, *spacing);

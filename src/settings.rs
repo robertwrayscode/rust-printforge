@@ -49,3 +49,12 @@ pub fn add_recent(p: &std::path::Path) {
 pub fn autosave_path() -> Option<PathBuf> {
     dir().map(|d| d.join("autosave.pforge"))
 }
+
+/// The fit gap (mm) the user picked from their Fit test print, if any.
+pub fn fit_gap() -> Option<f64> {
+    get("fit_gap").first().and_then(|v| v.parse().ok())
+}
+
+pub fn set_fit_gap(g: f64) {
+    set("fit_gap", &[format!("{g:.2}")]);
+}

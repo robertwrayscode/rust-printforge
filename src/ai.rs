@@ -288,6 +288,9 @@ fn make_shape(name: &str, params: Option<&Value>) -> Result<(Shape, DVec3), Stri
         .or_else(|| LIBRARY.iter().find(|i| i.name.to_ascii_lowercase().replace(' ', "") == name.to_ascii_lowercase().replace([' ', '_', '-'], "")))
         .ok_or_else(|| format!("unknown shape \"{name}\""))?;
     let mut shape = (info.shape)();
+    if let Some(g) = crate::settings::fit_gap() {
+        shape.apply_fit(g);
+    }
     if let Some(p) = params.and_then(|p| p.as_object()) {
         if let Ok(mut v) = serde_json::to_value(&shape) {
             if let Some(inner) = v.as_object_mut().and_then(|o| o.values_mut().next()).and_then(|i| i.as_object_mut()) {

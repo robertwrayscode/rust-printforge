@@ -1022,3 +1022,50 @@ pub fn jar_cap_size(jar_d: f64, jar_h: f64) -> DVec3 {
     let d = jar_d + 5.0;
     DVec3::new(d, d, neck_h + 2.0 + 1.0)
 }
+
+// ---- fit test
+
+/// Gaps (mm, each side) tested by the Fit test plate, hole 1..6.
+pub const FIT_GAPS: [f64; 6] = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5];
+const FIT_PEG_D: f64 = 10.0;
+
+/// A plate with six numbered holes, each a little looser than the last, and a 10 mm peg.
+/// Print it, try the peg in each hole: the snuggest one it slides into is your printer's gap.
+pub fn fit_test(size: DVec3) -> Mesh {
+    let (w, d, h) = (86.0, 26.0, 5.0);
+    let plate = cube(DVec3::new(-w / 2.0, -d / 2.0, 0.0), DVec3::new(w / 2.0, d / 2.0, h));
+    let mut cuts = vec![];
+    let step = w / 6.0;
+    for (i, g) in FIT_GAPS.iter().enumerate() {
+        let x = -w / 2.0 + step * (i as f64 + 0.5);
+        let r = FIT_PEG_D / 2.0 + g;
+        // straight hole with small chamfers so first-layer squish doesn't narrow it
+        cuts.push(rev(&[(0.0, -1.0), (r + 1.4, -1.0), (r, 0.4), (r, h - 0.4), (r + 0.4, h), (r + 1.4, h + 1.0), (0.0, h + 1.0)], 96).into_iter_moved(x, 3.0));
+        // engraved number under the hole
+        let t = crate::shapes::Shape::Text { text: (i + 1).to_string(), font: crate::shapes::FontChoice::Sans, spacing: 0.0 };
+        let th = 6.0;
+        let tw = t.text_aspect().unwrap_or(0.6) * th;
+        let tm = t.generate(DVec3::new(tw, th, 1.0));
+        cuts.push(moved(tm, DVec3::new(x, -d / 2.0 + 3.0, h - 0.6)));
+    }
+    let plate = cut(plate, cuts);
+    // the peg: chamfered both ends, printed standing up beside the plate
+    let pr = FIT_PEG_D / 2.0;
+    let ph = 12.0;
+    let peg = rev(&[(0.0, 0.0), (pr - 0.6, 0.0), (pr, 0.6), (pr, ph - 0.6), (pr - 0.6, ph), (0.0, ph)], 96);
+    let mut out = plate;
+    out.append(&moved(peg, DVec3::new(w / 2.0 + 4.0 + pr, 0.0, 0.0)));
+    let b = out.bounds();
+    let out = moved(out, DVec3::new(-b.center().x, -b.center().y, 0.0));
+    let _ = size;
+    out
+}
+
+trait MovedXY {
+    fn into_iter_moved(self, x: f64, y: f64) -> Mesh;
+}
+impl MovedXY for Mesh {
+    fn into_iter_moved(self, x: f64, y: f64) -> Mesh {
+        moved(self, DVec3::new(x, y, 0.0))
+    }
+}
