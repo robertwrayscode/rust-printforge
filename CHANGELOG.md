@@ -2,6 +2,9 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.8.1 — 2026-11-26
+- Fit test: numbers moved in from the plate's front edge (0.8.0 cut them right at the edge).
+
 ## 0.8.0 — 2026-11-26
 - **Fit test** (Hardware): a plate with six numbered holes, each 0.1 mm looser than the last
   (0.0–0.5 mm gap), plus a 10 mm peg. Print it, push the peg into each hole, and click the number

@@ -1046,7 +1046,7 @@ pub fn fit_test(size: DVec3) -> Mesh {
         let th = 6.0;
         let tw = t.text_aspect().unwrap_or(0.6) * th;
         let tm = t.generate(DVec3::new(tw, th, 1.0));
-        cuts.push(moved(tm, DVec3::new(x, -d / 2.0 + 3.0, h - 0.6)));
+        cuts.push(moved(tm, DVec3::new(x, -d / 2.0 + 4.2, h - 0.6)));
     }
     let plate = cut(plate, cuts);
     // the peg: chamfered both ends, printed standing up beside the plate
