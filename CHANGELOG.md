@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.6.2 — 2026-11-26
+- **▶ Print** button (top right, or Ctrl+P / Cmd+P): checks the design, saves it to RoboForge's
+  Prints folder and opens it straight in Bambu Studio — just press Slice plate, then Print.
+  No save dialog. Finds Bambu Studio in its usual place; if it's somewhere else it asks once and
+  remembers. "Export to Bambu" is still there for saving a file wherever you like.
+
 ## 0.6.1 — 2026-11-26
 - **Filament types**: each filament in the Filaments list now has a type — 32 of Bambu Lab's own
   H2C presets (PLA Basic/Matte/Silk+/Tough+/Wood/CF…, PETG Basic/HF/CF, ABS, ASA, PC, TPU 95A HF,
@@ -17,7 +23,7 @@ The version shows in the window title and the status bar, and in the download fi
 - The preview's gram estimates use each preset's real density.
 
 ## 0.6.0 — 2026-11-25
-- **▤ Preview** (top bar): see your design as it will print.
+- **Preview** (top bar): see your design as it will print.
   - Layer slider (and ◀ ▶ buttons) cuts the view at any layer, with the layer outline drawn in
     each filament colour; shows which colours are on that layer and how many changes it needs.
   - Estimates for the Bambu Lab H2C: print time, grams of each filament, number of colour changes

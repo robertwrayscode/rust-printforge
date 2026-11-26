@@ -1,6 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 pub mod app;
+pub mod bambu_studio;
 pub mod check;
 pub mod csg;
 pub mod decal;

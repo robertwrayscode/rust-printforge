@@ -104,6 +104,8 @@ enum PendingAction {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ExportKind {
     Bambu,
+    /// Export, then open in Bambu Studio ready to slice and print.
+    Print,
     Generic3mf,
     Stl,
     Obj,
@@ -1281,9 +1283,44 @@ impl App {
         }
     }
 
+    /// Export to a file of our own and hand it to Bambu Studio — no save dialog.
+    fn request_print(&mut self) {
+        if self.doc.objects.iter().all(|o| o.hole || !o.visible) {
+            self.status = "Nothing to print yet.".into();
+            return;
+        }
+        let name = self.file.as_ref().and_then(|f| f.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "RoboForge design".into());
+        let safe: String = name.chars().map(|c| if c.is_alphanumeric() || " -_".contains(c) { c } else { '_' }).collect();
+        let p = crate::bambu_studio::print_folder().join(format!("{safe}.3mf"));
+        self.pending_export = Some((ExportKind::Print, p));
+        self.start_check();
+        self.status = "Checking, then opening in Bambu Studio…".into();
+    }
+
+    fn open_in_bambu(&mut self, file: &std::path::Path) -> String {
+        let app = crate::bambu_studio::find().or_else(|| {
+            let mut d = rfd::FileDialog::new().set_title("Where is Bambu Studio? (only asked once)");
+            if cfg!(windows) {
+                d = d.add_filter("Bambu Studio", &["exe"]).set_directory("C:\\Program Files");
+            } else if cfg!(target_os = "macos") {
+                d = d.set_directory("/Applications");
+            }
+            let p = d.pick_file()?;
+            crate::bambu_studio::remember(&p);
+            Some(p)
+        });
+        let Some(app) = app else {
+            return format!("Saved {} — couldn't find Bambu Studio, so open that file in it yourself.", file.display());
+        };
+        match crate::bambu_studio::open(&app, file) {
+            Ok(()) => "Opening in Bambu Studio… press Slice plate, then Print. Colours and filament types are already set.".into(),
+            Err(e) => format!("Saved {} but couldn't start Bambu Studio ({e}). Open the file in it yourself.", file.display()),
+        }
+    }
+
     fn request_export(&mut self, kind: ExportKind) {
         let (filter, ext, def) = match kind {
-            ExportKind::Bambu => ("Bambu Studio project", "3mf", "design_bambu_H2C.3mf"),
+            ExportKind::Bambu | ExportKind::Print => ("Bambu Studio project", "3mf", "design_bambu_H2C.3mf"),
             ExportKind::Generic3mf => ("3MF with colours", "3mf", "design.3mf"),
             ExportKind::Stl => ("STL", "stl", "design.stl"),
             ExportKind::Obj => ("OBJ with colours", "obj", "design.obj"),
@@ -1297,12 +1334,13 @@ impl App {
     fn do_export(&mut self, kind: ExportKind, p: PathBuf) {
         let objs = io::collect_export(&self.doc, &mut self.cache);
         let r = match kind {
-            ExportKind::Bambu => io::write_bambu_3mf(&p, &self.doc, &objs),
+            ExportKind::Bambu | ExportKind::Print => io::write_bambu_3mf(&p, &self.doc, &objs),
             ExportKind::Generic3mf => io::write_generic_3mf(&p, &self.doc, &objs),
             ExportKind::Stl => io::write_stl(&p, &objs),
             ExportKind::Obj => io::write_obj(&p, &self.doc, &objs),
         };
         self.status = match r {
+            Ok(()) if kind == ExportKind::Print => self.open_in_bambu(&p),
             Ok(()) => match kind {
                 ExportKind::Bambu => format!("Exported {} — open it in Bambu Studio and press Slice; colours are already assigned.", p.display()),
                 ExportKind::Stl => format!("Exported {} (STL has no colour information).", p.display()),
@@ -2087,13 +2125,16 @@ impl App {
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(RichText::new("⬆ Export to Bambu").strong().color(crate::theme::export_green())).clicked() {
+                if ui.button(RichText::new("▶ Print").strong().color(crate::theme::export_green())).on_hover_text("Check the design, then open it in Bambu Studio ready to slice and print (Ctrl+P)").clicked() {
+                    self.request_print();
+                }
+                if ui.button(RichText::new("⬆ Export to Bambu").color(crate::theme::export_green())).on_hover_text("Save a Bambu Studio file somewhere you choose").clicked() {
                     self.request_export(ExportKind::Bambu);
                 }
             if ui.button("✨ Make it printable").on_hover_text("Turn parts onto their best face, put everything on the plate, spread parts out, then check").clicked() {
                 self.make_printable();
             }
-            if ui.selectable_label(self.preview.is_some(), "▤ Preview").on_hover_text("Layer-by-layer preview with print time, filament and colour-change estimates").clicked() {
+            if ui.selectable_label(self.preview.is_some(), "Preview").on_hover_text("Layer-by-layer preview with print time, filament and colour-change estimates").clicked() {
                 if self.preview.is_some() {
                     self.preview = None;
                 } else {
@@ -3743,6 +3784,7 @@ impl App {
             return;
         }
         let mut nudge = DVec3::ZERO;
+        let mut print_now = false;
         let step = if self.snap > 0.0 { self.snap } else { 1.0 };
         ctx.input_mut(|i| {
             let cmd = egui::Modifiers::COMMAND;
@@ -3790,6 +3832,9 @@ impl App {
             if i.consume_key(egui::Modifiers::NONE, Key::F) {
                 self.fit_view(true);
             }
+            if i.consume_key(egui::Modifiers::COMMAND, Key::P) {
+                print_now = true;
+            }
             if i.consume_key(egui::Modifiers::NONE, Key::X) {
                 self.xray = !self.xray;
                 self.geometry_dirty = true;
@@ -3827,6 +3872,9 @@ impl App {
                 }
             }
         });
+        if print_now {
+            self.request_print();
+        }
         if nudge != DVec3::ZERO && !self.selection.is_empty() {
             for id in self.selection.clone() {
                 if let Some(o) = self.doc.find_mut(id) {
