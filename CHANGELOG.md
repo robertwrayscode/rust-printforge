@@ -2,6 +2,16 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.6.0 — 2026-11-25
+- **▤ Preview** (top bar): see your design as it will print.
+  - Layer slider (and ◀ ▶ buttons) cuts the view at any layer, with the layer outline drawn in
+    each filament colour; shows which colours are on that layer and how many changes it needs.
+  - Estimates for the Bambu Lab H2C: print time, grams of each filament, number of colour changes
+    and the waste they cause. Knows the H2C's 7 hotends: up to 7 filaments change by hotend swap
+    (~45 s, almost no waste); more than 7 means some full purges and it says so.
+  - Rough (±30%), based on 0.2 mm layers, 2 walls and 15% infill — Bambu Studio's numbers after
+    slicing are the exact ones. Updates by itself when you change the design.
+
 ## 0.5.2 — 2026-11-25
 - **Hollow spun shapes**: tick "Hollow (open top)" in the sketch window's Spin mode (or in the
   Inspector) and set the wall and floor thickness. The inside follows your outline, so the wall

@@ -64,6 +64,7 @@ own settings in the Inspector:
 
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
+- **Print preview:** layer slider plus print time, grams per colour and colour-change estimates.
 - **See-through view** (X): look inside parts to check holes and hollows.
 - **Sketch tool:** draw an outline on a grid, then extrude it up or spin it into a vase, knob or ring.
 - **Picture onto a part:** paint a photo or logo onto any part's surface in filament colours.

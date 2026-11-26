@@ -154,6 +154,14 @@ fn line_param(o: DVec3, dir: DVec3, ro: DVec3, rd: DVec3) -> f64 {
     if den.abs() < 1e-9 { 0.0 } else { (b * e - d) / den }
 }
 
+struct PreviewState {
+    meshes: Vec<Mesh>,
+    est: crate::preview::Estimate,
+    /// layers shown: 1..=est.layers
+    layer: usize,
+    edits: u64,
+}
+
 struct ImgDialog {
     path: PathBuf,
     pic: Arc<crate::imaging::Picture>,
@@ -238,6 +246,7 @@ pub struct App {
     recover_offer: bool,
     show_overhangs: bool,
     xray: bool,
+    preview: Option<PreviewState>,
     xray_edges: HashMap<u64, Arc<Vec<(Vec3, Vec3)>>>,
     bands: Vec<(f64, u8)>,
     printable_report: Option<Vec<String>>,
@@ -320,6 +329,7 @@ impl App {
             recover_offer: crate::settings::autosave_path().map(|p| p.exists()).unwrap_or(false),
             show_overhangs: false,
             xray: false,
+            preview: None,
             xray_edges: HashMap::new(),
             bands: vec![(0.0, 0), (5.0, 2)],
             printable_report: None,
@@ -1395,7 +1405,24 @@ impl App {
         let mut lines = Batch::new(Pass::Lines);
         let mut overlay = Batch::new(Pass::Overlay);
         let fil = &self.doc.filaments;
-        for e in &self.entries {
+        if let Some(pv) = &self.preview {
+            let z = pv.layer as f64 * crate::preview::LAYER_H;
+            for m in &pv.meshes {
+                for t in 0..m.tris.len() {
+                    let p = m.tri_points(t);
+                    let col = fil.get(m.colors[t] as usize).map(|f| f.color).unwrap_or([200, 200, 200]);
+                    for [a, b, c] in crate::preview::clip_below(p, z) {
+                        solid.tri(a.as_vec3(), b.as_vec3(), c.as_vec3(), rgba(col, 1.0));
+                    }
+                    if let Some((a, b)) = crate::preview::section(p, z - 1e-4) {
+                        let lc = [col[0] as f32 / 255.0 * 0.6 + 0.4, col[1] as f32 / 255.0 * 0.6 + 0.4, col[2] as f32 / 255.0 * 0.6 + 0.4, 1.0];
+                        let lift = Vec3::new(0.0, 0.0, 0.02);
+                        lines.line(a.as_vec3() + lift, b.as_vec3() + lift, lc);
+                    }
+                }
+            }
+        }
+        for e in self.entries.iter().filter(|_| self.preview.is_none()) {
             let sel = self.selection.contains(&e.id);
             for t in 0..e.mesh.tris.len() {
                 let [a, b, c] = e.mesh.tri_points(t);
@@ -1597,6 +1624,101 @@ impl App {
         ui.add_space(4.0);
         if ui.button("Cancel").clicked() {
             self.tool = Tool::Select;
+        }
+    }
+
+    fn start_preview(&mut self) {
+        let objs: Vec<Mesh> = crate::io::collect_export(&self.doc, &mut self.cache).into_iter().map(|o| o.mesh).collect();
+        let est = crate::preview::estimate(&objs, &self.doc.filaments);
+        let layer = match &self.preview {
+            Some(p) if p.layer < p.est.layers => p.layer.min(est.layers),
+            _ => est.layers,
+        };
+        self.preview = Some(PreviewState { meshes: objs, est, layer, edits: self.edits });
+    }
+
+    fn preview_panel(&mut self, ui: &mut egui::Ui) {
+        if self.preview.as_ref().map(|p| p.edits != self.edits).unwrap_or(false) {
+            self.start_preview();
+            self.geometry_dirty = true;
+        }
+        let fils = self.doc.filaments.clone();
+        let Some(pv) = &mut self.preview else { return };
+        crate::theme::section(ui, "Print preview");
+        if pv.meshes.is_empty() {
+            ui.label("Nothing to print yet.");
+            return;
+        }
+        let e = &pv.est;
+        let before = pv.layer;
+        ui.horizontal(|ui| {
+            if ui.small_button("◀").clicked() && pv.layer > 1 {
+                pv.layer -= 1;
+            }
+            ui.spacing_mut().slider_width = (ui.available_width() - 40.0).max(80.0);
+            ui.add(egui::Slider::new(&mut pv.layer, 1..=e.layers).show_value(false));
+            if ui.small_button("▶").clicked() && pv.layer < e.layers {
+                pv.layer += 1;
+            }
+        });
+        let l = pv.layer;
+        ui.label(format!("Layer {} of {}  ·  {:.1} mm", l, e.layers, l as f64 * crate::preview::LAYER_H));
+        let m = e.layer_colors.get(l - 1).copied().unwrap_or(0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Colours on this layer:");
+            for c in 0..64u8 {
+                if m & (1 << c) != 0 {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                    ui.painter().rect_filled(r, 3.0, c32(fils.get(c as usize).map(|f| f.color).unwrap_or([200, 200, 200])));
+                }
+            }
+            let s = e.swaps_per_layer.get(l - 1).copied().unwrap_or(0);
+            if s > 0 {
+                ui.label(RichText::new(format!("{s} change{}", if s == 1 { "" } else { "s" })).weak());
+            }
+        });
+        if pv.layer != before {
+            self.geometry_dirty = true;
+        }
+        let e = &self.preview.as_ref().unwrap().est;
+        ui.add_space(6.0);
+        crate::theme::section(ui, "Estimate (Bambu Lab H2C, 0.2 mm layers)");
+        egui::Grid::new("pv_est").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+            ui.label("Print time");
+            ui.label(RichText::new(format!("about {}", crate::preview::fmt_time(e.time_s))).strong());
+            ui.end_row();
+            ui.label("Colour changes");
+            ui.label(RichText::new(e.swaps.to_string()).strong());
+            ui.end_row();
+            ui.label("Change waste");
+            ui.label(format!("≈ {:.1} g", e.waste_g));
+            ui.end_row();
+            let total: f64 = e.grams.iter().map(|g| g.1).sum::<f64>() + e.waste_g;
+            ui.label("Filament total");
+            ui.label(RichText::new(format!("≈ {total:.0} g")).strong());
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        for (c, g) in &e.grams {
+            ui.horizontal(|ui| {
+                let f = fils.get(*c as usize);
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                ui.painter().rect_filled(r, 3.0, c32(f.map(|f| f.color).unwrap_or([200, 200, 200])));
+                ui.label(format!("{} {}", f.map(|f| f.name.as_str()).unwrap_or("?"), f.map(|f| f.material.as_str()).unwrap_or("")));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(format!("{g:.1} g"));
+                });
+            });
+        }
+        if e.colors_used > 7 {
+            ui.colored_label(Color32::from_rgb(240, 170, 60), format!("{} filaments: more than the H2C's 7 hotends, so some changes need a full purge (slower, more waste).", e.colors_used));
+        } else if e.swaps > 300 {
+            ui.label(RichText::new("Lots of colour changes. Fewer colours per layer (or colours that start at a layer boundary) print much faster.").small().color(Color32::from_rgb(240, 170, 60)));
+        }
+        ui.label(RichText::new("Rough estimate (±30%) using standard 15% infill and 2 walls. Bambu Studio shows exact numbers after slicing.").small().weak());
+        if ui.button("Close preview").clicked() {
+            self.preview = None;
+            self.geometry_dirty = true;
         }
     }
 
@@ -1883,6 +2005,14 @@ impl App {
             if ui.button("✨ Make it printable").on_hover_text("Turn parts onto their best face, put everything on the plate, spread parts out, then check").clicked() {
                 self.make_printable();
             }
+            if ui.selectable_label(self.preview.is_some(), "▤ Preview").on_hover_text("Layer-by-layer preview with print time, filament and colour-change estimates").clicked() {
+                if self.preview.is_some() {
+                    self.preview = None;
+                } else {
+                    self.start_preview();
+                }
+                self.geometry_dirty = true;
+            }
             if ui.selectable_label(self.xray, "👁 See-through").on_hover_text("Make every part see-through so you can look inside — e.g. to check a hole you cut (X)").clicked() {
                 self.xray = !self.xray;
                 self.geometry_dirty = true;
@@ -2118,6 +2248,10 @@ impl App {
 
     fn right_panel(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
+            if self.preview.is_some() {
+                self.preview_panel(ui);
+                ui.separator();
+            }
             match self.tool {
                 Tool::Paint | Tool::Fill => self.paint_panel(ui),
                 Tool::Measure => {
