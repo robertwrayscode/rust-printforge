@@ -2,6 +2,11 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.6.1 — 2026-11-26
+- **Flexi joint** (Moving parts): the joint that articulated toy animals use, on its own: a
+  coned pin in a coned socket, printed in place, with two stubs to build the body pieces
+  onto. Set its size, gap and how far it swings each way.
+
 ## 1.6.0 — 2026-11-26
 - **Quick makers** (new section in Shapes):
   - **Name keychain:** type a name; the tag follows the letters, with a key-ring hole on the

@@ -1309,6 +1309,17 @@ pub fn pip_gap() -> f64 {
 /// Every piece is a straight-up extrusion, so it prints with no supports and comes off moving.
 /// `snake` adds a head and a pointed tail.
 pub fn flexi_chain(segments: u32, width: f64, seg_len: f64, height: f64, gap: f64, snake: bool) -> Mesh {
+    flexi_chain_swing(segments, width, seg_len, height, gap, snake, 25.0)
+}
+
+/// One print-in-place toy joint (the kind articulated animals use): a coned pin trapped in a
+/// coned socket, with two stubs to build the body parts onto. `swing` is degrees each way.
+pub fn flexi_joint(width: f64, gap: f64, swing: f64) -> Mesh {
+    let w = width.clamp(6.0, 40.0);
+    flexi_chain_swing(2, w, w * 1.6, w * 0.7, gap, false, swing)
+}
+
+pub fn flexi_chain_swing(segments: u32, width: f64, seg_len: f64, height: f64, gap: f64, snake: bool, swing: f64) -> Mesh {
     let n = segments.clamp(2, 60) as usize;
     let w = width.clamp(6.0, 40.0);
     let g = gap.clamp(0.15, 0.8);
@@ -1317,7 +1328,7 @@ pub fn flexi_chain(segments: u32, width: f64, seg_len: f64, height: f64, gap: f6
     let rb = (r + g + 1.6).max(w / 2.0); // ring of material around the knuckle (at least the body's half-width)
     let seg = seg_len.max(rb * 2.0 + 2.0);
     let h = height.clamp(2.0, 40.0);
-    let theta = 25f64.to_radians();
+    let theta = swing.clamp(10.0, 40.0).to_radians();
     // knuckle and socket are chamfered top and bottom (45°) so the joint can't be pulled
     // apart upward, and both still print without supports
     let d = (0.8f64).min(r * 0.3).min(h * 0.2);

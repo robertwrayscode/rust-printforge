@@ -5298,6 +5298,12 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.checkbox(wall_mount, "Wall-mount tabs");
             ui.add(egui::Slider::new(gap, 0.05..=0.8).text("lid fit gap (mm)"));
         }
+        Shape::FlexiJoint { width, gap, swing } => {
+            ui.label(RichText::new("The joint articulated toys use: a coned pin in a coned socket, printed in place. Put one body piece on each stub (keep them out of the round joint), select all three and Group. Add more joints for a longer body.").small().weak());
+            ui.add(egui::Slider::new(width, 6.0..=30.0).text("size (mm)"));
+            ui.add(egui::Slider::new(swing, 10.0..=40.0).text("swing each way (°)"));
+            ui.add(egui::Slider::new(gap, 0.15..=0.6).text("gap (mm)"));
+        }
         Shape::FlexiChain { segments, width, gap, snake } => {
             ui.label(RichText::new("Prints in one piece and comes off the plate already moving. Flex it gently the first time.").small().weak());
             ui.checkbox(snake, "Snake (head and tail)");
