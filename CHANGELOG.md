@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.9.4 — 2026-11-26
+- **Add a thread** (Inspector) to any part: a **screw thread** on the top or bottom end (that end
+  becomes a screw of the diameter you pick) or a **threaded hole** down the middle with a lead-in.
+  Standard metric pitch is picked for you (or set your own); threaded holes get your Fit test gap
+  so a screw of the same size fits.
+
 ## 0.9.3 — 2026-11-26
 - **Aa Text on part** (tools bar): raised or cut-in lettering on any face of a part — flat or
   curved (letters follow a cylinder's curve). Pick text, letter height, how far it sticks out or

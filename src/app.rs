@@ -285,6 +285,13 @@ pub struct App {
     split_pin_d: f64,
     split_preview: Option<(u64, usize, f64)>,
     split_apply: Option<u64>,
+    thread_outside: bool,
+    thread_d: Option<(u64, f64)>,
+    thread_pitch_auto: bool,
+    thread_pitch: f64,
+    thread_len: f64,
+    thread_top: bool,
+    thread_apply: Option<u64>,
     preview: Option<PreviewState>,
     xray_edges: HashMap<u64, Arc<Vec<(Vec3, Vec3)>>>,
     bands: Vec<(f64, u8)>,
@@ -381,6 +388,13 @@ impl App {
             split_pin_d: 5.0,
             split_preview: None,
             split_apply: None,
+            thread_outside: true,
+            thread_d: None,
+            thread_pitch_auto: true,
+            thread_pitch: 1.5,
+            thread_len: 10.0,
+            thread_top: true,
+            thread_apply: None,
             preview: None,
             xray_edges: HashMap::new(),
             bands: vec![(0.0, 0), (5.0, 2)],
@@ -2294,6 +2308,44 @@ impl App {
         }
     }
 
+    fn apply_thread(&mut self, id: u64) {
+        let Some(o) = self.doc.find(id).cloned() else { return };
+        let mut wm = self.cache.world_mesh(&o);
+        wm.fill_unset_color(o.color);
+        let b = wm.bounds();
+        let d = self.thread_d.filter(|t| t.0 == id).map(|t| t.1).unwrap_or((b.max.x - b.min.x).min(b.max.y - b.min.y));
+        let opts = crate::parts::ThreadOptions {
+            outside: self.thread_outside,
+            diameter: d,
+            pitch: self.thread_pitch,
+            length: self.thread_len,
+            at_top: self.thread_top,
+            gap: crate::settings::fit_gap().unwrap_or(0.2),
+        };
+        let centre = glam::DVec2::new((b.min.x + b.max.x) / 2.0, (b.min.y + b.max.y) / 2.0);
+        match crate::parts::add_thread(&wm, centre, &opts) {
+            Ok(mut m) => {
+                for c in m.colors.iter_mut() {
+                    if *c == NO_COLOR {
+                        *c = o.color;
+                    }
+                }
+                let inv = o.transform().inverse();
+                for v in &mut m.verts {
+                    *v = inv.transform_point3(*v);
+                }
+                crate::shapes::orient_outward(&mut m);
+                if let Some(ob) = self.doc.find_mut(id) {
+                    ob.kind = Kind::Mesh(Arc::new(m));
+                    ob.paint = None;
+                }
+                self.touch();
+                self.status = format!("Added a {:.1} mm {} (pitch {:.2} mm) to '{}'.", d, if self.thread_outside { "screw thread" } else { "threaded hole" }, self.thread_pitch, o.name);
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
     fn apply_split(&mut self, id: u64) {
         let Some(o) = self.doc.find(id).cloned() else { return };
         let Some((_, axis, at)) = self.split_at.filter(|s| s.0 == id) else { return };
@@ -3035,6 +3087,9 @@ impl App {
             if self.tool == Tool::Select || !self.selection.is_empty() {
                 self.split_preview = None;
                 self.inspector(ui);
+                if let Some(id) = self.thread_apply.take() {
+                    self.apply_thread(id);
+                }
                 if let Some(id) = self.split_apply.take() {
                     self.apply_split(id);
                 }
@@ -3202,6 +3257,49 @@ impl App {
                 ui.label(RichText::new("The part becomes a mesh, so its shape settings no longer apply. Ctrl+Z undoes it.").small().weak());
             });
             let wb = self.world_bounds(o.id);
+            egui::CollapsingHeader::new("Add a thread").id_salt("thread_hdr").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.radio(self.thread_outside, "Screw thread").clicked() {
+                        self.thread_outside = true;
+                        self.thread_d = None;
+                    }
+                    if ui.radio(!self.thread_outside, "Threaded hole").clicked() {
+                        self.thread_outside = false;
+                        self.thread_d = None;
+                    }
+                });
+                let width = (wb.max.x - wb.min.x).min(wb.max.y - wb.min.y);
+                let mut d = match self.thread_d {
+                    Some((id, d)) if id == o.id => d,
+                    _ => if self.thread_outside { width } else { (width * 0.5).round().max(3.0) },
+                };
+                ui.add(egui::Slider::new(&mut d, 2.0..=width.max(3.0)).text("diameter (mm)"));
+                self.thread_d = Some((o.id, d));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.thread_pitch_auto, "Standard pitch");
+                    if self.thread_pitch_auto {
+                        self.thread_pitch = crate::parts::coarse_pitch(d).max((d / 10.0).min(3.0));
+                        ui.label(format!("{:.2} mm", self.thread_pitch));
+                    } else {
+                        ui.add(egui::DragValue::new(&mut self.thread_pitch).range(0.4..=6.0).speed(0.05).suffix(" mm"));
+                    }
+                });
+                let hmax = (wb.max.z - wb.min.z).max(1.0);
+                self.thread_len = self.thread_len.min(hmax);
+                ui.add(egui::Slider::new(&mut self.thread_len, 1.0..=hmax).text("length (mm)"));
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.thread_top, true, "At the top");
+                    ui.radio_value(&mut self.thread_top, false, "At the bottom");
+                });
+                if ui.button("Add thread").clicked() {
+                    self.thread_apply = Some(o.id);
+                }
+                ui.label(RichText::new(if self.thread_outside {
+                    "That end of the part becomes a solid screw. Matching hole: same diameter and pitch (the hole gets your Fit test gap)."
+                } else {
+                    "Cuts a threaded hole down the middle, with a lead-in at the opening."
+                }).small().weak());
+            });
             egui::CollapsingHeader::new("Split into pieces").id_salt("split_hdr").show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Cut across");

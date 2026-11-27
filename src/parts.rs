@@ -289,7 +289,7 @@ pub fn cable_clip(size: DVec3, cable_d: f64) -> Mesh {
 
 /// External ISO-like thread on a rod: major diameter d, pitch p, length len (z from 0).
 /// `internal` widens it slightly for use as a nut cutter.
-fn threaded_rod(d: f64, p: f64, len: f64, chamfer_bottom: bool, chamfer_top: bool) -> Mesh {
+pub fn threaded_rod(d: f64, p: f64, len: f64, chamfer_bottom: bool, chamfer_top: bool) -> Mesh {
     let r_maj = d / 2.0;
     let depth = 0.54 * p;
     let n = 64usize;
@@ -1209,4 +1209,83 @@ pub fn gridfinity_baseplate(gx: u32, gy: u32) -> Mesh {
 
 pub fn gridfinity_baseplate_size(gx: u32, gy: u32) -> DVec3 {
     DVec3::new(GF_PITCH * gx.clamp(1, 7) as f64 + 1.0, GF_PITCH * gy.clamp(1, 7) as f64 + 1.0, 4.5)
+}
+
+// ---- add a thread to any part
+
+pub struct ThreadOptions {
+    /// true = screw thread on the outside, false = threaded hole
+    pub outside: bool,
+    pub diameter: f64,
+    pub pitch: f64,
+    pub length: f64,
+    /// thread at the top end (true) or the bottom end
+    pub at_top: bool,
+    /// extra room for threaded holes (each side)
+    pub gap: f64,
+}
+
+/// Cut a thread into `part` (world coordinates) around the vertical axis through `centre`.
+pub fn add_thread(part: &Mesh, centre: DVec2, o: &ThreadOptions) -> Result<Mesh, String> {
+    let b = part.bounds();
+    let len = o.length.clamp(o.pitch * 2.0, b.max.z - b.min.z);
+    let z0 = if o.at_top { b.max.z - len } else { b.min.z };
+    let p = o.pitch.clamp(0.4, 6.0);
+    let res = if o.outside {
+        // replace that stretch of the part with the threaded rod: (part − band) ∪ rod
+        let rod = threaded_rod(o.diameter, p, len, !o.at_top, o.at_top);
+        let band_r = (b.max - b.min).max_element() + 10.0;
+        let (bz0, bz1) = if o.at_top { (z0, b.max.z + 1.0) } else { (b.min.z - 1.0, z0 + len) };
+        let band = cyl_z(centre.x, centre.y, band_r, bz0, bz1, 64);
+        let rod = moved(rod, DVec3::new(centre.x, centre.y, z0));
+        let rest = crate::csg::combine(&[part.clone()], &[band]).mesh;
+        let out = crate::csg::combine(&[rest, rod], &[]).mesh;
+        if out.volume().abs() < part.volume().abs() * 0.2 {
+            return Err("The thread diameter is much smaller than the part — set it to the part's width for a screw.".into());
+        }
+        out
+    } else {
+        let d = o.diameter + 2.0 * o.gap;
+        let mut hole = threaded_rod(d, p, len + 1.0, false, false);
+        // open end gets a lead-in countersink
+        let r = d / 2.0;
+        let sink = rev(&[(0.0, -0.5), (r + 0.6, -0.5), (r - 0.54 * p, 0.6 + 0.54 * p), (0.0, 0.6 + 0.54 * p)], 64);
+        let (hole, sink) = if o.at_top {
+            // the rod grows upward from z0 - 1 and pokes out of the top
+            let h = moved(hole, DVec3::new(centre.x, centre.y, z0 - 0.0));
+            let mut s = sink;
+            for v in &mut s.verts {
+                v.z = -v.z;
+            }
+            crate::shapes::orient_outward(&mut s);
+            (h, moved(s, DVec3::new(centre.x, centre.y, b.max.z)))
+        } else {
+            for v in &mut hole.verts {
+                v.z -= 1.0;
+            }
+            (moved(hole, DVec3::new(centre.x, centre.y, z0)), moved(sink, DVec3::new(centre.x, centre.y, b.min.z)))
+        };
+        crate::csg::combine(&[part.clone()], &[hole, sink]).mesh
+    };
+    if res.tris.is_empty() {
+        return Err("Couldn't add the thread here.".into());
+    }
+    Ok(res)
+}
+
+#[cfg(test)]
+mod thread_tests {
+    use super::*;
+    #[test]
+    fn thread_a_cylinder_and_a_hole() {
+        let c = crate::shapes::Shape::Cylinder { sides: 96, bevel: 0.0 }.generate(DVec3::new(20.0, 20.0, 30.0));
+        let o = ThreadOptions { outside: true, diameter: 20.0, pitch: 2.5, length: 15.0, at_top: true, gap: 0.2 };
+        let t = add_thread(&c, DVec2::ZERO, &o).unwrap();
+        let v0 = c.volume();
+        assert!(t.volume() < v0 && t.volume() > v0 * 0.8, "{} vs {v0}", t.volume());
+        let bx = crate::shapes::Shape::Box { radius: 0.0, steps: 1 }.generate(DVec3::new(30.0, 30.0, 20.0));
+        let h = add_thread(&bx, DVec2::ZERO, &ThreadOptions { outside: false, diameter: 10.0, pitch: 1.5, length: 12.0, at_top: true, gap: 0.2 }).unwrap();
+        let removed = bx.volume() - h.volume();
+        assert!(removed > 600.0 && removed < 1300.0, "{removed}");
+    }
 }
