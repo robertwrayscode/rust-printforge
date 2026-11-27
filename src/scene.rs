@@ -540,3 +540,56 @@ mod tests {
         assert!((b.center().z - 10.0).abs() < 1e-9);
     }
 }
+
+/// Apply `f` to every filament number an object uses (its colour, paint, mesh colours,
+/// group children and shapes with a second colour).
+pub fn map_colors(o: &mut Object, f: &dyn Fn(u8) -> u8) {
+    use crate::mesh::NO_COLOR;
+    let g = |c: u8| if c == NO_COLOR { c } else { f(c) };
+    o.color = g(o.color);
+    if let Some(p) = &mut o.paint {
+        for c in p.iter_mut() {
+            *c = g(*c);
+        }
+    }
+    match &mut o.kind {
+        Kind::Mesh(m) => {
+            if m.colors.iter().any(|c| g(*c) != *c) {
+                let mut mm = (**m).clone();
+                for c in mm.colors.iter_mut() {
+                    *c = g(*c);
+                }
+                *m = Arc::new(mm);
+            }
+        }
+        Kind::Group { children, .. } => {
+            for ch in children.iter_mut() {
+                map_colors(ch, f);
+            }
+        }
+        Kind::Shape(crate::shapes::Shape::QrCode { dark, .. }) => *dark = g(*dark as u8) as u32,
+        Kind::Shape(crate::shapes::Shape::Keychain { text_color, .. }) => *text_color = g(*text_color as u8) as u32,
+        _ => {}
+    }
+}
+
+/// Every filament number an object uses.
+pub fn used_colors(o: &Object) -> Vec<u8> {
+    let seen = std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let mut c = o.clone();
+    map_colors(&mut c, &|x| {
+        seen.borrow_mut().insert(x);
+        x
+    });
+    seen.into_inner().into_iter().collect()
+}
+
+/// Give an object (and its group children) fresh ids from `doc`.
+pub fn renumber(o: &mut Object, doc: &mut Document) {
+    o.id = doc.alloc_id();
+    if let Kind::Group { children, .. } = &mut o.kind {
+        for ch in children.iter_mut() {
+            renumber(ch, doc);
+        }
+    }
+}

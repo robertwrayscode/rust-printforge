@@ -2,6 +2,15 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.8.0 — 2026-11-26
+- **My Parts:** select anything you've made and click **★ Save to My Parts…** in the
+  Inspector. It appears at the top of the Shapes panel with its own picture; click it to add
+  it to any design. Parts keep their colours (matched to the closest filament you have
+  loaded) and their settings: Ungroup to edit a saved keychain's name, a joint's gap, etc.
+  Right-click a part to rename or delete it. They're stored in the RoboForge settings folder
+  under *My Parts*, one file each.
+- New parts now go to an empty spot on the plate instead of lining up off the edge.
+
 ## 1.7.0 — 2026-11-26
 - New **Joints** section in Shapes, with five joints for articulated toys:
   - **Side-to-side:** coned pin in a coned socket, the classic flexi-animal joint.

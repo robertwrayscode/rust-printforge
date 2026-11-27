@@ -28,6 +28,12 @@ pub fn render(idx: usize) -> Vec<u8> {
         size = DVec3::new(14.0, 16.0, 5.0);
     }
     let m = shape.generate(size);
+    let col = TILE_COLORS[idx % TILE_COLORS.len()];
+    render_mesh(&m, &|_| col)
+}
+
+/// Render any mesh; `color(t)` gives triangle t's colour.
+pub fn render_mesh(m: &crate::mesh::Mesh, color: &dyn Fn(usize) -> [u8; 3]) -> Vec<u8> {
     let b = m.bounds();
     let c = b.center();
     // view rotation: yaw then pitch (looking slightly down at the front-right corner)
@@ -45,11 +51,11 @@ pub fn render(idx: usize) -> Vec<u8> {
     let mid = (mn + mx) * 0.5;
     let to_px = |v: DVec3| DVec3::new((v.x - mid.x) * scale + n as f64 / 2.0, (mid.y - v.y) * scale + n as f64 / 2.0, v.z);
     let pts: Vec<DVec3> = verts.iter().map(|v| to_px(*v)).collect();
-    let col = TILE_COLORS[idx % TILE_COLORS.len()];
     let mut zbuf = vec![f64::NEG_INFINITY; n * n];
     let mut rgba = vec![0u8; n * n * 4];
     let light = DVec3::new(-0.35, 0.5, 0.8).normalize();
-    for t in &m.tris {
+    for (ti, t) in m.tris.iter().enumerate() {
+        let col = color(ti);
         let (a, b2, c2) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
         let nrm = (verts[t[1] as usize] - verts[t[0] as usize]).cross(verts[t[2] as usize] - verts[t[0] as usize]).normalize_or_zero();
         if nrm.z <= 0.0 {

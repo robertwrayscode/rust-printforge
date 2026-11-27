@@ -11,6 +11,7 @@ pub mod edges;
 pub mod io;
 pub mod makers;
 pub mod materials;
+pub mod my_parts;
 pub mod mesh;
 pub mod render;
 pub mod scene;

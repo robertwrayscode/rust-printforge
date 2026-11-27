@@ -301,6 +301,12 @@ pub struct App {
     resize: Option<ResizeDrag>,
     pp: Option<PushPull>,
     thumbs: Vec<egui::TextureHandle>,
+    /// saved My Parts and their thumbnails (loaded on first use)
+    my_parts: Option<Vec<(crate::my_parts::MyPart, egui::TextureHandle)>>,
+    /// name being typed in the "Save to My Parts" window
+    save_part: Option<String>,
+    /// (part index, new name) while renaming
+    rename_part: Option<(usize, String)>,
     edits: u64,
     saved_edits: u64,
     confirm_discard: Option<PendingAction>,
@@ -405,6 +411,9 @@ impl App {
             resize: None,
             pp: None,
             thumbs: vec![],
+            my_parts: None,
+            save_part: None,
+            rename_part: None,
             edits: 0,
             saved_edits: 0,
             confirm_discard: None,
@@ -572,6 +581,128 @@ impl App {
             let wb = self.world_bounds(id);
             b.union(&wb)
         })
+    }
+
+    // ---------------------------------------------------------- My Parts
+
+    fn load_my_parts(&mut self, ctx: &egui::Context) {
+        let mut out = vec![];
+        for p in crate::my_parts::list() {
+            let px = crate::my_parts::thumbnail(&p, &mut self.cache);
+            let img = egui::ColorImage::from_rgba_premultiplied([crate::thumbs::THUMB, crate::thumbs::THUMB], &px);
+            let tex = ctx.load_texture(format!("mypart-{}", p.path.display()), img, egui::TextureOptions::LINEAR);
+            out.push((p, tex));
+        }
+        self.my_parts = Some(out);
+    }
+
+    /// Save the selection as a reusable part.
+    fn save_selection_as_part(&mut self, name: &str) {
+        let b = self.selection_bounds();
+        if b.is_empty() {
+            return;
+        }
+        let off = DVec3::new(b.center().x, b.center().y, b.min.z);
+        let mut objects: Vec<Object> = self.selection.iter().filter_map(|id| self.doc.find(*id).cloned()).collect();
+        for o in &mut objects {
+            o.pos -= off;
+            o.locked = false;
+        }
+        // keep only the filaments the part uses, numbered from 0
+        let mut used: Vec<u8> = objects.iter().flat_map(crate::scene::used_colors).collect();
+        used.sort_unstable();
+        used.dedup();
+        used.retain(|c| (*c as usize) < self.doc.filaments.len());
+        for o in &mut objects {
+            crate::scene::map_colors(o, &|c| used.iter().position(|u| *u == c).unwrap_or(0) as u8);
+        }
+        let filaments = used.iter().map(|c| self.doc.filaments[*c as usize].clone()).collect();
+        let part = crate::my_parts::MyPart { name: name.trim().to_string(), saved: String::new(), filaments, objects, path: Default::default() };
+        match crate::my_parts::save(&part) {
+            Ok(_) => {
+                self.status = format!("Saved \"{}\" to My Parts — it's at the top of the Shapes panel.", part.name);
+                self.my_parts = None;
+            }
+            Err(e) => self.status = format!("Couldn't save the part: {e}"),
+        }
+    }
+
+    fn add_my_part(&mut self, idx: usize) {
+        let Some(parts) = &self.my_parts else { return };
+        let Some((part, _)) = parts.get(idx) else { return };
+        let part = part.clone();
+        let map = crate::my_parts::color_map(&part, &self.doc.filaments);
+        let mut objs = part.objects.clone();
+        let mut size = Aabb::empty();
+        for o in &mut objs {
+            crate::scene::map_colors(o, &|c| map.get(c as usize).copied().unwrap_or(0));
+            crate::scene::renumber(o, &mut self.doc);
+            size = size.union(&self.cache.world_mesh(o).bounds());
+        }
+        let spot = self.free_spot(size.size());
+        let ids: Vec<u64> = objs.iter().map(|o| o.id).collect();
+        for mut o in objs {
+            o.pos += DVec3::new(spot.x, spot.y, 0.0);
+            self.doc.objects.push(o);
+        }
+        let id = if ids.len() > 1 { self.doc.group(&ids, &mut self.cache) } else { ids.first().copied() };
+        if let Some(id) = id {
+            if let Some(o) = self.doc.find_mut(id) {
+                o.name = part.name.clone();
+            }
+            self.selection = vec![id];
+        }
+        self.touch();
+        self.status = format!("Added {}. Resize it with W, D and H (tick Keep proportions to scale it evenly).", part.name);
+    }
+
+    fn my_parts_windows(&mut self, ctx: &egui::Context) {
+        if let Some(name) = &mut self.save_part {
+            let mut open = true;
+            let mut go = false;
+            egui::Window::new("Save to My Parts").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+                ui.label("Name");
+                let r = ui.add(egui::TextEdit::singleline(name).desired_width(240.0));
+                r.request_focus();
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    go = true;
+                }
+                ui.label(RichText::new("Saves the selected parts with their colours and settings. A part with the same name is replaced.").small().weak());
+                if ui.add_enabled(!name.trim().is_empty(), egui::Button::new(RichText::new("Save").strong())).clicked() {
+                    go = true;
+                }
+            });
+            if go && !name.trim().is_empty() {
+                let n = name.clone();
+                self.save_part = None;
+                self.save_selection_as_part(&n);
+            } else if !open {
+                self.save_part = None;
+            }
+        }
+        if let Some((idx, name)) = &mut self.rename_part {
+            let mut open = true;
+            let mut go = false;
+            egui::Window::new("Rename part").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+                let r = ui.add(egui::TextEdit::singleline(name).desired_width(240.0));
+                r.request_focus();
+                if (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || ui.button("Rename").clicked() {
+                    go = true;
+                }
+            });
+            if go {
+                let (i, n) = (*idx, name.clone());
+                self.rename_part = None;
+                if let Some((p, _)) = self.my_parts.as_ref().and_then(|v| v.get(i)) {
+                    if let Err(e) = crate::my_parts::rename(p, &n) {
+                        self.status = e;
+                    }
+                }
+                self.my_parts = None;
+            } else if !open {
+                self.rename_part = None;
+            }
+        }
     }
 
     pub fn add_shape(&mut self, info_idx: usize) {
@@ -1285,11 +1416,39 @@ impl App {
 
     /// Somewhere on the plate next to existing objects, Tinkercad-style.
     fn free_spot(&mut self, size: DVec3) -> DVec3 {
-        let mut x = 0.0;
         let used: Vec<Aabb> = self.doc.objects.clone().iter().map(|o| self.cache.world_mesh(o).bounds()).collect();
+        let free = |x: f64, y: f64| {
+            let b = Aabb { min: DVec3::new(x - size.x / 2.0, y - size.y / 2.0, 0.0), max: DVec3::new(x + size.x / 2.0, y + size.y / 2.0, size.z) };
+            !used.iter().any(|u| u.overlaps(&b, -1.0))
+        };
+        // look for room on the plate first: centre outwards, row by row
+        let (hx, hy) = (165.0 - size.x / 2.0 - 2.0, 160.0 - size.y / 2.0 - 2.0);
+        let step = 5.0;
+        let mut ys = vec![0.0];
+        let mut k = 1.0;
+        while k * step <= hy {
+            ys.push(k * step);
+            ys.push(-k * step);
+            k += 1.0;
+        }
+        for &y in &ys {
+            let mut xs = vec![0.0];
+            let mut j = 1.0;
+            while j * step <= hx {
+                xs.push(j * step);
+                xs.push(-j * step);
+                j += 1.0;
+            }
+            for &x in &xs {
+                if free(x, y) {
+                    return DVec3::new(x, y, 0.0);
+                }
+            }
+        }
+        // plate full: line up to the right
+        let mut x = 0.0;
         for _ in 0..40 {
-            let b = Aabb { min: DVec3::new(x - size.x / 2.0, -size.y / 2.0, 0.0), max: DVec3::new(x + size.x / 2.0, size.y / 2.0, size.z) };
-            if !used.iter().any(|u| u.overlaps(&b, -1.0)) {
+            if free(x, 0.0) {
                 break;
             }
             x += size.x.max(10.0) + 5.0;
@@ -1307,6 +1466,7 @@ impl App {
 
     fn picture_windows(&mut self, ctx: &egui::Context) {
         self.sketch_window(ctx);
+        self.my_parts_windows(ctx);
         self.ai_window(ctx);
         self.my_filaments_window(ctx);
         self.history_window(ctx);
@@ -2629,39 +2789,8 @@ impl App {
 
     /// Everything printed in filament `from` is printed in `to` instead.
     fn remap_color(&mut self, from: u8, to: u8) {
-        fn fix(o: &mut Object, from: u8, to: u8) {
-            if o.color == from {
-                o.color = to;
-            }
-            if let Some(p) = &mut o.paint {
-                for c in p.iter_mut() {
-                    if *c == from {
-                        *c = to;
-                    }
-                }
-            }
-            match &mut o.kind {
-                Kind::Mesh(m) if m.colors.contains(&from) => {
-                    let mut mm = (**m).clone();
-                    for c in mm.colors.iter_mut() {
-                        if *c == from {
-                            *c = to;
-                        }
-                    }
-                    *m = Arc::new(mm);
-                }
-                Kind::Group { children, .. } => {
-                    for ch in children.iter_mut() {
-                        fix(ch, from, to);
-                    }
-                }
-                Kind::Shape(Shape::QrCode { dark, .. }) if *dark == from as u32 => *dark = to as u32,
-                Kind::Shape(Shape::Keychain { text_color, .. }) if *text_color == from as u32 => *text_color = to as u32,
-                _ => {}
-            }
-        }
         for o in self.doc.objects.iter_mut() {
-            fix(o, from, to);
+            crate::scene::map_colors(o, &|c| if c == from { to } else { c });
         }
         self.touch();
         let names = |i: u8| self.doc.filaments.get(i as usize).map(|f| f.name.clone()).unwrap_or_default();
@@ -3045,6 +3174,63 @@ impl App {
             }
             let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
             let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
+            if self.my_parts.is_none() {
+                self.load_my_parts(ui.ctx());
+            }
+            let mut add_part = None;
+            let mut delete_part = None;
+            ui.label(RichText::new("MY PARTS").size(10.5).strong().color(crate::theme::header()));
+            let parts = self.my_parts.as_ref().map(|v| v.len()).unwrap_or(0);
+            if parts == 0 {
+                ui.label(RichText::new("Select something you made and click ★ Save to My Parts in the Inspector to reuse it in any design.").small().weak());
+            }
+            egui::Grid::new("my_parts_grid").num_columns(cols).spacing([4.0, 4.0]).show(ui, |ui| {
+                for k in 0..parts {
+                    let (name, tex, saved) = {
+                        let (p, t) = &self.my_parts.as_ref().unwrap()[k];
+                        (p.name.clone(), t.id(), p.saved.clone())
+                    };
+                    let (rect, r) = ui.allocate_exact_size(tile, Sense::click());
+                    let bg = if r.hovered() { crate::theme::tile_hover() } else { crate::theme::tile_bg() };
+                    ui.painter().rect_filled(rect, 6.0, bg);
+                    if r.hovered() {
+                        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, crate::theme::accent()), egui::StrokeKind::Inside);
+                    }
+                    let img_rect = Rect::from_center_size(rect.center() - Vec2::new(0.0, 8.0), Vec2::splat(50.0));
+                    ui.painter().image(tex, img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    let label: String = if name.chars().count() > 13 { name.chars().take(12).collect::<String>() + "…" } else { name.clone() };
+                    ui.painter().text(Pos2::new(rect.center().x, rect.bottom() - 9.0), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.5), crate::theme::tile_text());
+                    let r = r.on_hover_text(format!("{name} — saved {saved}. Click to add; right-click to rename or delete."));
+                    if r.clicked() {
+                        add_part = Some(k);
+                    }
+                    r.context_menu(|ui| {
+                        if ui.button("Rename…").clicked() {
+                            self.rename_part = Some((k, name.clone()));
+                            ui.close();
+                        }
+                        if ui.button("Delete from My Parts").clicked() {
+                            delete_part = Some(k);
+                            ui.close();
+                        }
+                    });
+                    if (k + 1) % cols == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+            if let Some(k) = add_part {
+                self.add_my_part(k);
+            }
+            if let Some(k) = delete_part {
+                if let Some((p, _)) = self.my_parts.as_ref().and_then(|v| v.get(k)) {
+                    crate::my_parts::delete(p);
+                    self.status = format!("Deleted {} from My Parts.", p.name);
+                }
+                self.my_parts = None;
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new("BASIC SHAPES").size(10.5).strong().color(crate::theme::header()));
             for cat in ["Basic shapes", "Quick makers", "Moving parts", "Joints", "Electronics", "Hardware", "Mounting", "Home & storage"] {
             if cat != "Basic shapes" {
                 ui.add_space(4.0);
@@ -3712,6 +3898,10 @@ impl App {
                 self.delete_selection();
             }
         });
+        if ui.button("★ Save to My Parts…").on_hover_text("Keep this design to reuse in other projects").clicked() {
+            let name = if self.selection.len() == 1 { self.doc.find(self.selection[0]).map(|o| o.name.clone()).unwrap_or_default() } else { String::new() };
+            self.save_part = Some(name);
+        }
         let n = self.doc.plate_count();
         if n > 1 {
             ui.horizontal_wrapped(|ui| {
