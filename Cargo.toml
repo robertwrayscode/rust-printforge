@@ -1,6 +1,6 @@
 [package]
 name = "roboforge"
-version = "0.9.4"
+version = "1.0.0"
 edition = "2024"
 description = "Tinkercad-style 3D designer with colour export and print checking for Bambu Lab printers"
 license = "MIT"
@@ -12,6 +12,7 @@ lto = "thin"
 [dependencies]
 arboard = { version = "3.7", default-features = false }
 boolmesh = { version = "0.2.2", features = ["rayon"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 earcutr = "0.5.0"
 eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 egui = "0.36"

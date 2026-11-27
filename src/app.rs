@@ -266,6 +266,7 @@ pub struct App {
     img_dialog: Option<ImgDialog>,
     sketch: Option<crate::sketch::SketchEditor>,
     my_fils: Option<Vec<Filament>>,
+    history: Option<Vec<crate::history::Version>>,
     ai: AiPanel,
     decal: Option<crate::decal::Decal>,
     decal_tex: Option<egui::TextureHandle>,
@@ -369,6 +370,7 @@ impl App {
             img_dialog: None,
             sketch: None,
             my_fils: None,
+            history: None,
             ai: AiPanel::default(),
             decal: None,
             decal_tex: None,
@@ -1083,6 +1085,7 @@ impl App {
         match io::save_project(&p, &self.doc) {
             Ok(()) => {
                 self.status = format!("Saved {}", p.display());
+                crate::history::record(&p);
                 crate::settings::add_recent(&p);
                 self.file = Some(p);
                 self.clear_autosave();
@@ -1234,6 +1237,7 @@ impl App {
         self.sketch_window(ctx);
         self.ai_window(ctx);
         self.my_filaments_window(ctx);
+        self.history_window(ctx);
         use crate::imaging::ImageMode;
         let mut close_img = false;
         let mut create_img = None;
@@ -2019,6 +2023,60 @@ impl App {
         (0..255u8).filter(|&c| used[c as usize]).collect()
     }
 
+    fn history_window(&mut self, ctx: &egui::Context) {
+        let Some(list) = &self.history else { return };
+        let mut open = true;
+        let mut restore: Option<PathBuf> = None;
+        let mut copy: Option<PathBuf> = None;
+        let name = self.file.as_ref().and_then(|f| f.file_name()).map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        egui::Window::new("Version history").open(&mut open).default_width(460.0).resizable(true).show(ctx, |ui| {
+            ui.label(RichText::new(format!("Every save of {name} is kept here (the last 100). Restoring loads that version; your current design stays in undo, so Ctrl+Z brings it back.")).small().weak());
+            if list.is_empty() {
+                ui.label("No saved versions yet — they appear from the next save on.");
+            }
+            egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                egui::Grid::new("hist").num_columns(4).striped(true).spacing([10.0, 6.0]).show(ui, |ui| {
+                    for (i, v) in list.iter().enumerate() {
+                        ui.label(RichText::new(&v.when).strong());
+                        ui.label(RichText::new(format!("{} part{} · {} KB{}", v.objects, if v.objects == 1 { "" } else { "s" }, (v.bytes + 1023) / 1024, if i == 0 { " · latest" } else { "" })).weak());
+                        if ui.button("Restore").clicked() {
+                            restore = Some(v.path.clone());
+                        }
+                        if ui.button("Save a copy…").clicked() {
+                            copy = Some(v.path.clone());
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+        if let Some(p) = restore {
+            match io::load_project(&p) {
+                Ok(d) => {
+                    self.doc = d;
+                    self.selection.clear();
+                    self.touch();
+                    self.status = "Restored an earlier version. Save to keep it, or Ctrl+Z to go back.".into();
+                    self.history = None;
+                    return;
+                }
+                Err(e) => self.status = format!("Couldn't open that version: {e}"),
+            }
+        }
+        if let Some(p) = copy {
+            if let Some(dest) = rfd::FileDialog::new().add_filter("RoboForge project", &["pforge"]).set_file_name("earlier version.pforge").save_file() {
+                let dest = if dest.extension().is_none() { dest.with_extension("pforge") } else { dest };
+                self.status = match std::fs::copy(&p, &dest) {
+                    Ok(_) => format!("Saved a copy as {}", dest.display()),
+                    Err(e) => format!("Couldn't copy: {e}"),
+                };
+            }
+        }
+        if !open {
+            self.history = None;
+        }
+    }
+
     fn my_filaments_window(&mut self, ctx: &egui::Context) {
         let Some(lib) = &mut self.my_fils else { return };
         let mut open = true;
@@ -2574,6 +2632,10 @@ impl App {
                 });
                 if ui.button("Save").clicked() {
                     self.save(false);
+                    ui.close();
+                }
+                if ui.add_enabled(self.file.is_some(), egui::Button::new("Version history…")).on_disabled_hover_text("Save the design first — every save after that is kept").clicked() {
+                    self.history = self.file.as_ref().map(|f| crate::history::list(f));
                     ui.close();
                 }
                 if ui.button("Save as…").clicked() {

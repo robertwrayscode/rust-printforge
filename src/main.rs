@@ -20,6 +20,7 @@ pub mod sketch;
 pub mod thumbs;
 pub mod theme;
 pub mod settings;
+pub mod history;
 pub mod imaging;
 pub mod parts;
 pub mod preview;

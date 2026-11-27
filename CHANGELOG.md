@@ -2,6 +2,14 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.0.0 — 2026-11-26
+- **Version history** (File → Version history…): every save keeps a copy (the last 100 per
+  design). See when each was saved and how many parts it had; **Restore** loads it (Ctrl+Z
+  brings back what you had), or **Save a copy…** keeps it as its own file.
+- 1.0: everything on the feature list is in — parts library, sketch, paint & picture decals,
+  text on surfaces, threads, rounded edges, splitting, Gridfinity, fit test, print preview,
+  filament types, AI helper, and one-click Print to Bambu Studio.
+
 ## 0.9.4 — 2026-11-26
 - **Add a thread** (Inspector) to any part: a **screw thread** on the top or bottom end (that end
   becomes a screw of the diameter you pick) or a **threaded hole** down the middle with a lead-in.
