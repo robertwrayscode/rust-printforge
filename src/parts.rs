@@ -1492,3 +1492,176 @@ mod moving_tests {
         assert_eq!(gp.components().1, 3);
     }
 }
+
+// ---- electronics enclosures
+
+/// Port on a board edge. side: 0 = front (y = 0), 1 = right (x = w), 2 = back (y = d), 3 = left (x = 0).
+/// `at` = centre along that edge from the board's corner, `z` = bottom above the board's top
+/// (negative = under the board), w × h = opening.
+pub struct Port {
+    pub side: u8,
+    pub at: f64,
+    pub z: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+pub struct Board {
+    pub name: &'static str,
+    pub w: f64,
+    pub d: f64,
+    pub holes: &'static [(f64, f64)],
+    pub hole_d: f64,
+    /// tallest part above the board
+    pub tall: f64,
+    pub ports: &'static [(u8, f64, f64, f64, f64)],
+}
+
+/// Board presets. Positions from the makers' mechanical drawings (Raspberry Pi 4 and 5) or
+/// the common reference layout (Arduino Uno R3, ESP32 DevKitC). Clones can differ.
+pub const BOARDS: &[Board] = &[
+    Board {
+        name: "Raspberry Pi 5",
+        w: 85.0,
+        d: 56.0,
+        holes: &[(3.5, 3.5), (61.5, 3.5), (3.5, 52.5), (61.5, 52.5)],
+        hole_d: 2.7,
+        tall: 16.5,
+        ports: &[(0, 11.2, 0.0, 10.0, 4.0), (0, 25.8, 0.0, 8.0, 4.0), (0, 39.2, 0.0, 8.0, 4.0), (1, 10.2, 0.0, 17.0, 14.0), (1, 29.1, 0.0, 15.0, 16.5), (1, 47.0, 0.0, 15.0, 16.5), (3, 28.0, -2.2, 13.0, 2.4)],
+    },
+    Board {
+        name: "Raspberry Pi 4",
+        w: 85.0,
+        d: 56.0,
+        holes: &[(3.5, 3.5), (61.5, 3.5), (3.5, 52.5), (61.5, 52.5)],
+        hole_d: 2.7,
+        tall: 16.5,
+        ports: &[(0, 11.2, 0.0, 10.0, 4.0), (0, 26.0, 0.0, 8.0, 4.0), (0, 39.5, 0.0, 8.0, 4.0), (0, 53.5, 0.0, 7.0, 7.0), (1, 9.0, 0.0, 15.0, 16.5), (1, 27.0, 0.0, 15.0, 16.5), (1, 45.75, 0.0, 17.0, 14.0), (3, 28.0, -2.2, 13.0, 2.4)],
+    },
+    Board {
+        name: "Arduino Uno R3",
+        w: 68.6,
+        d: 53.3,
+        holes: &[(14.0, 2.5), (15.3, 50.7), (66.1, 7.6), (66.1, 35.5)],
+        hole_d: 3.2,
+        tall: 11.5,
+        ports: &[(3, 38.1, 0.0, 13.0, 11.5), (3, 7.6, 0.0, 10.0, 11.5)],
+    },
+    Board { name: "ESP32 DevKitC", w: 55.0, d: 28.5, holes: &[], hole_d: 0.0, tall: 6.0, ports: &[(3, 14.25, -0.5, 9.0, 4.5)] },
+    Board { name: "Custom board", w: 60.0, d: 40.0, holes: &[(3.5, 3.5), (56.5, 3.5), (3.5, 36.5), (56.5, 36.5)], hole_d: 3.0, tall: 10.0, ports: &[] },
+];
+
+pub struct EnclosureOptions {
+    pub board: usize,
+    pub custom_w: f64,
+    pub custom_d: f64,
+    pub extra_h: f64,
+    pub vents: bool,
+    pub wall_mount: bool,
+    pub gap: f64,
+}
+
+const ENC_WALL: f64 = 2.0;
+const ENC_FLOOR: f64 = 2.0;
+const ENC_STANDOFF: f64 = 5.0;
+const ENC_CLEAR: f64 = 1.0;
+const ENC_LID: f64 = 3.0;
+
+fn enc_dims(o: &EnclosureOptions) -> (f64, f64, f64, f64, f64) {
+    let b = &BOARDS[o.board.min(BOARDS.len() - 1)];
+    let (bw, bd) = if b.name == "Custom board" { (o.custom_w.max(10.0), o.custom_d.max(10.0)) } else { (b.w, b.d) };
+    let ow = bw + 2.0 * (ENC_CLEAR + ENC_WALL);
+    let od = bd + 2.0 * (ENC_CLEAR + ENC_WALL);
+    let oh = ENC_FLOOR + ENC_STANDOFF + 1.6 + b.tall + 2.0 + o.extra_h.max(0.0);
+    (bw, bd, ow, od, oh)
+}
+
+/// A case for a circuit board: base with screw posts and port openings, plus a vented lid
+/// printed beside it.
+pub fn enclosure(o: &EnclosureOptions) -> Mesh {
+    let b = &BOARDS[o.board.min(BOARDS.len() - 1)];
+    let (bw, bd, ow, od, oh) = enc_dims(o);
+    let base = container(DVec3::new(ow, od, oh), ENC_WALL, ENC_FLOOR, 3.0);
+    // the board's corner, centred in the box
+    let (x0, y0) = (-bw / 2.0, -bd / 2.0);
+    let board_top = ENC_FLOOR + ENC_STANDOFF + 1.6;
+    let mut adds = vec![base];
+    let mut cuts = vec![];
+    let holes: Vec<(f64, f64)> = if b.name == "Custom board" {
+        vec![(3.5, 3.5), (bw - 3.5, 3.5), (3.5, bd - 3.5), (bw - 3.5, bd - 3.5)]
+    } else {
+        b.holes.to_vec()
+    };
+    for &(hx, hy) in &holes {
+        adds.push(cyl_z(x0 + hx, y0 + hy, 3.0, ENC_FLOOR - 0.01, ENC_FLOOR + ENC_STANDOFF, 32));
+        // pilot hole for an M2.5/M3 self-tapping screw
+        cuts.push(cyl_z(x0 + hx, y0 + hy, (b.hole_d * 0.85).max(1.2) / 2.0, ENC_FLOOR + 0.8, ENC_FLOOR + ENC_STANDOFF + 1.0, 24));
+    }
+    if holes.is_empty() {
+        // boards without holes sit on two ledges and are held by the lid
+        for sy in [-1.0, 1.0] {
+            let y = sy * (bd / 2.0 - 1.5);
+            adds.push(cube(DVec3::new(-bw / 2.0, y - 1.5, ENC_FLOOR - 0.01), DVec3::new(bw / 2.0, y + 1.5, ENC_FLOOR + ENC_STANDOFF)));
+        }
+    }
+    let base = union(adds);
+    for &(side, at, z, w, h) in b.ports {
+        let (cx, cy) = match side {
+            0 => (x0 + at, -od / 2.0),
+            1 => (ow / 2.0, y0 + at),
+            2 => (x0 + at, od / 2.0),
+            _ => (-ow / 2.0, y0 + at),
+        };
+        let z0 = board_top + z - 0.5;
+        let z1 = z0 + h + 1.0;
+        let t = ENC_WALL + ENC_CLEAR + 2.0;
+        let (hw, hd) = if side % 2 == 0 { ((w + 1.0) / 2.0, t) } else { (t, (w + 1.0) / 2.0) };
+        cuts.push(cube(DVec3::new(cx - hw, cy - hd, z0.max(ENC_FLOOR + 0.6)), DVec3::new(cx + hw, cy + hd, z1)));
+    }
+    let mut base = cut(base, cuts);
+    if o.wall_mount {
+        let tabs: Vec<Mesh> = [-1.0, 1.0]
+            .iter()
+            .map(|sx| {
+                let x = sx * (ow / 2.0 + 6.0);
+                let tab = union(vec![cube(DVec3::new(x - 6.0, -8.0, 0.0), DVec3::new(x + 6.0, 8.0, 3.0)), cube(DVec3::new(x - 6.0 - sx * 1.0, -8.0, 0.0), DVec3::new(x + 6.0 - sx * 1.0, 8.0, 3.0))]);
+                cut(tab, vec![cyl_z(x + sx * 1.0, 0.0, 2.2, -1.0, 4.0, 24)])
+            })
+            .collect();
+        let mut all = vec![base];
+        for t in tabs {
+            all.push(moved(t, DVec3::new(0.0, 0.0, 0.0)));
+        }
+        base = union(all);
+    }
+    // lid: plate with a lip that drops inside the walls
+    let mut lid = lid(DVec3::new(ow, od, ENC_LID + 3.0), ENC_WALL, 3.0, o.gap, 3.0);
+    if o.vents {
+        let mut slots = vec![];
+        let n = ((bw - 10.0) / 5.0).floor().max(1.0) as i32;
+        for i in 0..n {
+            let x = -(n as f64 - 1.0) * 2.5 + i as f64 * 5.0;
+            slots.push(cube(DVec3::new(x - 1.0, -bd * 0.3, -1.0), DVec3::new(x + 1.0, bd * 0.3, ENC_LID + 4.0)));
+        }
+        lid = cut(lid, slots);
+    }
+    let mut out = base;
+    out.append(&moved(lid, DVec3::new(0.0, od + 8.0, 0.0)));
+    let bb = out.bounds();
+    moved(out, DVec3::new(-bb.center().x, -bb.center().y, 0.0))
+}
+
+#[cfg(test)]
+mod enclosure_tests {
+    use super::*;
+    #[test]
+    fn every_board_makes_a_solid_case() {
+        for i in 0..BOARDS.len() {
+            let o = EnclosureOptions { board: i, custom_w: 60.0, custom_d: 40.0, extra_h: 0.0, vents: true, wall_mount: i == 0, gap: 0.25 };
+            let m = enclosure(&o);
+            let (_, n) = m.components();
+            assert_eq!(n, 2, "{}: base + lid", BOARDS[i].name);
+            assert!(m.volume() > 1000.0);
+        }
+    }
+}

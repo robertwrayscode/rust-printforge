@@ -64,6 +64,7 @@ own settings in the Inspector:
 
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
+- **Board cases** for Raspberry Pi 4/5, Arduino Uno, ESP32 or custom boards.
 - **Print-in-place moving parts:** flexi snake/chain, spinning rings, gear pairs.
 - **Round/bevel edges, split into pieces with alignment pins, add threads, text on any surface, version history.**
 - **Gridfinity bins & baseplates**, plus a **Fit test** print that tunes lids, caps, nuts and hinges to your printer.

@@ -2859,7 +2859,7 @@ impl App {
             }
             let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
             let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
-            for cat in ["Basic shapes", "Moving parts", "Hardware", "Mounting", "Home & storage"] {
+            for cat in ["Basic shapes", "Moving parts", "Electronics", "Hardware", "Mounting", "Home & storage"] {
             if cat != "Basic shapes" {
                 ui.add_space(4.0);
                 ui.label(RichText::new(cat.to_uppercase()).size(10.5).strong().color(crate::theme::header()));
@@ -4991,6 +4991,28 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.label(RichText::new("Bins snap into the pockets. Glue or screw it into a drawer.").small().weak());
             sides(ui, gx, 1, 7, "wide (units)");
             sides(ui, gy, 1, 7, "deep (units)");
+        }
+        Shape::Enclosure { board, custom_w, custom_d, extra_h, vents, wall_mount, gap } => {
+            let boards = crate::parts::BOARDS;
+            egui::ComboBox::from_id_salt("enc_board").selected_text(boards[(*board as usize).min(boards.len() - 1)].name).show_ui(ui, |ui| {
+                for (i, b) in boards.iter().enumerate() {
+                    ui.selectable_value(board, i as u32, b.name);
+                }
+            });
+            let b = &boards[(*board as usize).min(boards.len() - 1)];
+            if b.name == "Custom board" {
+                ui.add(egui::Slider::new(custom_w, 10.0..=250.0).text("board width (mm)"));
+                ui.add(egui::Slider::new(custom_d, 10.0..=250.0).text("board depth (mm)"));
+                ui.label(RichText::new("Screw posts go 3.5 mm in from each corner. Cut extra openings with Hole shapes.").small().weak());
+            } else {
+                let sides = ["front", "right", "back", "left"];
+                let list: Vec<String> = b.ports.iter().map(|p| sides[p.0 as usize].to_string()).collect();
+                ui.label(RichText::new(format!("{} openings ({}), {} screw posts. Check them against your board before printing — clones can differ.", b.ports.len(), list.join(", "), b.holes.len())).small().weak());
+            }
+            ui.add(egui::Slider::new(extra_h, 0.0..=60.0).text("extra height (mm)")).on_hover_text("Room for a HAT, fan or wires");
+            ui.checkbox(vents, "Vent slots in the lid");
+            ui.checkbox(wall_mount, "Wall-mount tabs");
+            ui.add(egui::Slider::new(gap, 0.05..=0.8).text("lid fit gap (mm)"));
         }
         Shape::FlexiChain { segments, width, gap, snake } => {
             ui.label(RichText::new("Prints in one piece and comes off the plate already moving. Flex it gently the first time.").small().weak());

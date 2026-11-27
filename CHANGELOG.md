@@ -2,6 +2,14 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.2.0 — 2026-11-26
+- **Board case** (new Electronics section): a case for Raspberry Pi 5, Raspberry Pi 4,
+  Arduino Uno R3, ESP32 DevKitC or a custom board size. Screw posts with pilot holes at the
+  board's mounting holes (ledges for boards without holes), openings for each port (USB-C,
+  HDMI, USB, Ethernet, audio, microSD…), extra height for HATs/fans, vent slots in the lid,
+  optional wall-mount tabs. The lid prints beside the base and drops into it (uses your fit gap).
+  Raspberry Pi positions come from the official mechanical drawings.
+
 ## 1.1.0 — 2026-11-26
 - **Moving parts** (new section in Shapes):
   - **Flexi snake** and **Flexi chain**: print in one piece and come off the plate already
