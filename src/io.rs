@@ -16,6 +16,7 @@ fn err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+#[derive(Clone)]
 pub struct ExportObject {
     pub name: String,
     /// World-space mesh of all parts; colours are filament slots (0-based into doc.filaments).
@@ -240,6 +241,23 @@ fn mesh_xml(m: &Mesh, offset: DVec3, colors: impl Fn(usize) -> String) -> String
 /// Write a Bambu Studio project for the H2C with filament colours and per-face colour
 /// assignment, so it opens ready to slice and print.
 pub fn write_bambu_3mf(path: &Path, doc: &Document, objs: &[ExportObject]) -> Res<()> {
+    write_bambu_3mf_plates(path, doc, &[objs.to_vec()])
+}
+
+/// Where Bambu Studio puts plate `i` of `n` (it lays plates out in a grid, a fifth of a
+/// plate apart).
+pub fn bambu_plate_origin(i: usize, n: usize) -> (f64, f64) {
+    let v = (n as f64).sqrt();
+    let cols = if v > v.round() { v.round() as usize + 1 } else { (v.round() as usize).max(1) };
+    let (col, row) = (i % cols, i / cols);
+    let (bw, bd) = (BED_CENTER[0] * 2.0, BED_CENTER[1] * 2.0);
+    (col as f64 * bw * 1.2, -(row as f64) * bd * 1.2)
+}
+
+pub fn write_bambu_3mf_plates(path: &Path, doc: &Document, plates: &[Vec<ExportObject>]) -> Res<()> {
+    let objs: Vec<ExportObject> = plates.iter().flatten().cloned().collect();
+    let plate_of: Vec<usize> = plates.iter().enumerate().flat_map(|(p, v)| std::iter::repeat_n(p, v.len())).collect();
+    let objs = &objs[..];
     let fmap = filament_map(objs);
     let fils: Vec<&Filament> = fmap.keys().map(|&s| &doc.filaments[(s as usize).min(doc.filaments.len() - 1)]).collect();
     let cfg = bambu_project_config(&fils);
@@ -267,7 +285,8 @@ pub fn write_bambu_3mf(path: &Path, doc: &Document, objs: &[ExportObject]) -> Re
     let mut main_objs = String::new();
     let mut build = String::new();
     let mut settings = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
-    let mut plate = String::from("  <plate>\n    <metadata key=\"plater_id\" value=\"1\"/>\n    <metadata key=\"plater_name\" value=\"\"/>\n    <metadata key=\"locked\" value=\"false\"/>\n    <metadata key=\"filament_map_mode\" value=\"Auto For Flush\"/>\n");
+    let plate_head = |p: usize| format!("  <plate>\n    <metadata key=\"plater_id\" value=\"{}\"/>\n    <metadata key=\"plater_name\" value=\"\"/>\n    <metadata key=\"locked\" value=\"false\"/>\n    <metadata key=\"filament_map_mode\" value=\"Auto For Flush\"/>\n", p + 1);
+    let mut plate_xml: Vec<String> = (0..plates.len().max(1)).map(plate_head).collect();
     // volume ids: each part is its own mesh object inside the object's sub-model file
     let mut next_vol = 1usize;
     let vol_ids: Vec<Vec<usize>> = objs
@@ -326,8 +345,8 @@ pub fn write_bambu_3mf(path: &Path, doc: &Document, objs: &[ExportObject]) -> Re
             build,
             "  <item objectid=\"{main_id}\" p:UUID=\"{:08x}-b1ec-4553-aec9-835e5b724bb4\" transform=\"1 0 0 0 1 0 0 0 1 {} {} {}\" printable=\"1\"/>",
             main_id,
-            fmt_f(off.x + BED_CENTER[0]),
-            fmt_f(off.y + BED_CENTER[1]),
+            fmt_f(off.x + BED_CENTER[0] + bambu_plate_origin(plate_of[k], plates.len()).0),
+            fmt_f(off.y + BED_CENTER[1] + bambu_plate_origin(plate_of[k], plates.len()).1),
             fmt_f(off.z)
         );
         let name = xml_escape(&ob.name);
@@ -337,14 +356,16 @@ pub fn write_bambu_3mf(path: &Path, doc: &Document, objs: &[ExportObject]) -> Re
             "  <object id=\"{main_id}\">\n    <metadata key=\"name\" value=\"{name}\"/>\n    <metadata key=\"extruder\" value=\"{obj_dom_ext}\"/>\n    <metadata face_count=\"{fc}\"/>\n{part_cfg}  </object>\n"
         );
         let _ = write!(
-            plate,
+            plate_xml[plate_of[k]],
             "    <model_instance>\n      <metadata key=\"object_id\" value=\"{main_id}\"/>\n      <metadata key=\"instance_id\" value=\"0\"/>\n      <metadata key=\"identify_id\" value=\"{}\"/>\n    </model_instance>\n",
             100 + k
         );
     }
     rels.push_str("</Relationships>\n");
-    plate.push_str("  </plate>\n");
-    settings.push_str(&plate);
+    for mut p in plate_xml {
+        p.push_str("  </plate>\n");
+        settings.push_str(&p);
+    }
     settings.push_str("</config>\n");
     let date = "2026-01-01";
     let main = format!(
@@ -930,6 +951,47 @@ pub fn load_project(path: &Path) -> Res<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plates_export_and_switch() {
+        use crate::scene::{Kind, MeshCache, Object};
+        use crate::shapes::Shape;
+        let mut doc = Document::default();
+        let cube = |id| Object::new(id, "Box", Kind::Shape(Shape::Box { radius: 0.0, steps: 1 }), DVec3::splat(20.0));
+        doc.objects = vec![cube(1), cube(2)];
+        doc.next_id = 4;
+        let p = doc.add_plate();
+        assert_eq!(p, 1);
+        doc.move_to_plate(&[2], 1);
+        assert_eq!(doc.objects.len(), 1);
+        doc.switch_plate(1);
+        assert_eq!(doc.objects[0].id, 2);
+        doc.objects.push(cube(3));
+        doc.switch_plate(0);
+        assert_eq!(doc.all_objects().count(), 3);
+        assert_eq!(doc.plate_doc(1).objects.len(), 2);
+        // save / load keeps plates
+        let back: Document = serde_json::from_str(&serde_json::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(back.plates[1].len(), 2);
+
+        let mut cache = MeshCache::default();
+        let plates: Vec<_> = (0..2).map(|k| collect_export(&doc.plate_doc(k), &mut cache)).collect();
+        let path = std::env::temp_dir().join("roboforge_plates_test.3mf");
+        write_bambu_3mf_plates(&path, &doc, &plates).unwrap();
+        let mut z = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+        let mut cfg = String::new();
+        std::io::Read::read_to_string(&mut z.by_name("Metadata/model_settings.config").unwrap(), &mut cfg).unwrap();
+        assert!(cfg.contains("<metadata key=\"plater_id\" value=\"1\"/>"));
+        assert!(cfg.contains("<metadata key=\"plater_id\" value=\"2\"/>"));
+        assert_eq!(cfg.matches("<model_instance>").count(), 3);
+        let mut model = String::new();
+        std::io::Read::read_to_string(&mut z.by_name("3D/3dmodel.model").unwrap(), &mut model).unwrap();
+        // the plate-2 items sit one plate width (+ gap) to the right
+        assert!(model.contains(" 561 ") || model.contains(" 561."), "{}", &model[model.find("<build").unwrap()..]);
+        assert_eq!(bambu_plate_origin(1, 2), (396.0, 0.0));
+        assert_eq!(bambu_plate_origin(2, 3), (0.0, -384.0));
+        assert_eq!(bambu_plate_origin(3, 4), (396.0, -384.0));
+    }
 
     #[test]
     fn paint_codes_match_bambu() {

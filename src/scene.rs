@@ -103,11 +103,96 @@ pub struct Document {
     pub filaments: Vec<Filament>,
     pub printer: Printer,
     pub next_id: u64,
+    /// Objects on the other build plates. `objects` always holds the plate being edited;
+    /// its own slot here is kept empty.
+    #[serde(default)]
+    pub plates: Vec<Vec<Object>>,
+    #[serde(default)]
+    pub plate: usize,
 }
 
 impl Default for Document {
     fn default() -> Self {
-        Document { version: 1, objects: vec![], filaments: default_filaments(), printer: Printer::default(), next_id: 1 }
+        Document { version: 1, objects: vec![], filaments: default_filaments(), printer: Printer::default(), next_id: 1, plates: vec![], plate: 0 }
+    }
+}
+
+impl Document {
+    pub fn plate_count(&self) -> usize {
+        self.plates.len().max(1)
+    }
+
+    /// Switch which plate is being edited.
+    pub fn switch_plate(&mut self, to: usize) {
+        let n = self.plate_count();
+        if to >= n || to == self.plate {
+            return;
+        }
+        if self.plates.is_empty() {
+            self.plates = vec![vec![]];
+        }
+        let cur = std::mem::take(&mut self.objects);
+        self.plates[self.plate] = cur;
+        self.objects = std::mem::take(&mut self.plates[to]);
+        self.plate = to;
+    }
+
+    pub fn add_plate(&mut self) -> usize {
+        if self.plates.is_empty() {
+            self.plates = vec![vec![]];
+        }
+        self.plates.push(vec![]);
+        self.plates.len() - 1
+    }
+
+    /// Remove an empty plate (not the one being edited).
+    pub fn remove_plate(&mut self, p: usize) -> bool {
+        if self.plate_count() <= 1 {
+            return false;
+        }
+        if p == self.plate {
+            if !self.objects.is_empty() {
+                return false;
+            }
+            let to = if p == 0 { 1 } else { p - 1 };
+            self.switch_plate(to);
+        }
+        if !self.plates[p].is_empty() {
+            return false;
+        }
+        self.plates.remove(p);
+        if self.plate > p {
+            self.plate -= 1;
+        }
+        if self.plates.len() == 1 {
+            self.plates.clear();
+            self.plate = 0;
+        }
+        true
+    }
+
+    /// Move objects from the plate being edited to another plate.
+    pub fn move_to_plate(&mut self, ids: &[u64], to: usize) {
+        if to == self.plate || to >= self.plate_count() {
+            return;
+        }
+        let (moving, keep): (Vec<Object>, Vec<Object>) = std::mem::take(&mut self.objects).into_iter().partition(|o| ids.contains(&o.id));
+        self.objects = keep;
+        self.plates[to].extend(moving);
+    }
+
+    /// A copy of the document showing only plate `p` (for checking and exporting).
+    pub fn plate_doc(&self, p: usize) -> Document {
+        let mut d = self.clone();
+        d.objects = if p == self.plate { self.objects.clone() } else { self.plates.get(p).cloned().unwrap_or_default() };
+        d.plates = vec![];
+        d.plate = 0;
+        d
+    }
+
+    /// Every object on every plate.
+    pub fn all_objects(&self) -> impl Iterator<Item = &Object> {
+        self.objects.iter().chain(self.plates.iter().flatten())
     }
 }
 

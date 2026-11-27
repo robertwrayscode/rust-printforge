@@ -422,6 +422,77 @@ impl App {
         }
     }
 
+    // ---------------------------------------------------------- plates
+
+    fn switch_plate(&mut self, to: usize) {
+        if to == self.doc.plate {
+            return;
+        }
+        self.doc.switch_plate(to);
+        self.selection.clear();
+        self.touch();
+        self.status = format!("Now editing plate {}.", to + 1);
+    }
+
+    fn move_selection_to_plate(&mut self, to: usize) {
+        let ids: Vec<u64> = self.selection.iter().copied().filter(|id| self.doc.find(*id).is_some_and(|o| !o.locked)).collect();
+        if ids.is_empty() {
+            return;
+        }
+        self.doc.move_to_plate(&ids, to);
+        self.selection.clear();
+        self.touch();
+        self.status = format!("Moved {} object(s) to plate {}.", ids.len(), to + 1);
+    }
+
+    /// Plate tabs along the top-left of the viewport.
+    fn plate_tabs(&mut self, ui: &mut egui::Ui, rect: Rect) {
+        let n = self.doc.plate_count();
+        let area = Rect::from_min_size(rect.left_top() + Vec2::new(8.0, 8.0), Vec2::new((rect.width() - 220.0).max(120.0), 26.0));
+        let mut go = None;
+        let mut add = false;
+        let mut remove = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
+            ui.horizontal(|ui| {
+                for p in 0..n {
+                    let count = if p == self.doc.plate { self.doc.objects.len() } else { self.doc.plates.get(p).map_or(0, |v| v.len()) };
+                    let label = if n == 1 { "Plate 1".to_string() } else { format!("Plate {} ({count})", p + 1) };
+                    let r = ui.selectable_label(p == self.doc.plate, label).on_hover_text("Each plate prints separately. Bambu Studio gets every plate in one file.");
+                    if r.clicked() {
+                        go = Some(p);
+                    }
+                    r.context_menu(|ui| {
+                        if count == 0 && n > 1 {
+                            if ui.button("Delete this empty plate").clicked() {
+                                remove = Some(p);
+                                ui.close();
+                            }
+                        } else {
+                            ui.label("Only empty plates can be deleted.");
+                        }
+                    });
+                }
+                if ui.small_button("+ Plate").on_hover_text("Add another build plate").clicked() {
+                    add = true;
+                }
+            });
+        });
+        if let Some(p) = go {
+            self.switch_plate(p);
+        }
+        if add {
+            let p = self.doc.add_plate();
+            self.switch_plate(p);
+        }
+        if let Some(p) = remove {
+            if self.doc.remove_plate(p) {
+                self.selection.clear();
+                self.touch();
+                self.status = "Plate deleted.".into();
+            }
+        }
+    }
+
     // ---------------------------------------------------------- doc helpers
 
     fn touch(&mut self) {
@@ -1482,7 +1553,12 @@ impl App {
 
     fn do_export(&mut self, kind: ExportKind, p: PathBuf) {
         let objs = io::collect_export(&self.doc, &mut self.cache);
+        let n = self.doc.plate_count();
         let r = match kind {
+            ExportKind::Bambu | ExportKind::Print if n > 1 => {
+                let plates: Vec<_> = (0..n).map(|k| io::collect_export(&self.doc.plate_doc(k), &mut self.cache)).collect();
+                io::write_bambu_3mf_plates(&p, &self.doc, &plates)
+            }
             ExportKind::Bambu | ExportKind::Print => io::write_bambu_3mf(&p, &self.doc, &objs),
             ExportKind::Generic3mf => io::write_generic_3mf(&p, &self.doc, &objs),
             ExportKind::Stl => io::write_stl(&p, &objs),
@@ -1491,7 +1567,9 @@ impl App {
         self.status = match r {
             Ok(()) if kind == ExportKind::Print => self.open_in_bambu(&p),
             Ok(()) => match kind {
+                ExportKind::Bambu if n > 1 => format!("Exported {} with {n} plates — open it in Bambu Studio and press Slice all.", p.display()),
                 ExportKind::Bambu => format!("Exported {} — open it in Bambu Studio and press Slice; colours are already assigned.", p.display()),
+                _ if n > 1 => format!("Exported {} (plate {} only — this format holds one plate).", p.display(), self.doc.plate + 1),
                 ExportKind::Stl => format!("Exported {} (STL has no colour information).", p.display()),
                 _ => format!("Exported {}", p.display()),
             },
@@ -3604,6 +3682,18 @@ impl App {
                 self.delete_selection();
             }
         });
+        let n = self.doc.plate_count();
+        if n > 1 {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Move to:");
+                let cur = self.doc.plate;
+                for p in (0..n).filter(|p| *p != cur) {
+                    if ui.small_button(format!("Plate {}", p + 1)).clicked() {
+                        self.move_selection_to_plate(p);
+                    }
+                }
+            });
+        }
         ui.horizontal(|ui| {
             ui.label("Mirror:");
             for (n, ax) in [("X", 0), ("Y", 1), ("Z", 2)] {
@@ -4272,6 +4362,7 @@ impl App {
             }
         }
         // view cube-ish buttons
+        self.plate_tabs(ui, rect);
         let mut go_home = false;
         let area = Rect::from_min_size(rect.right_top() + Vec2::new(-190.0, 8.0), Vec2::new(182.0, 26.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {

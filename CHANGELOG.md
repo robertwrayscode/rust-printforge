@@ -2,6 +2,13 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.5.0 — 2026-11-26
+- **Multiple plates:** tabs at the top-left of the view. **+ Plate** adds one; click a tab to
+  work on that plate. **Move to: Plate N** in the Inspector moves the selected parts. Right-click
+  an empty plate's tab to delete it. **Export to Bambu** and **Print** put every plate in one
+  project, laid out the way Bambu Studio does, so **Slice all** prints them one after another.
+  STL, OBJ and standard 3MF export the plate you're on. Older designs open as one plate.
+
 ## 1.4.0 — 2026-11-26
 - **Save time** in the Print preview: "Find ways to cut colour changes" tries printing each
   colour as each of the others and lists the swaps that save the most changes, with the time
