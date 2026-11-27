@@ -2859,7 +2859,7 @@ impl App {
             }
             let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
             let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
-            for cat in ["Basic shapes", "Hardware", "Mounting", "Home & storage"] {
+            for cat in ["Basic shapes", "Moving parts", "Hardware", "Mounting", "Home & storage"] {
             if cat != "Basic shapes" {
                 ui.add_space(4.0);
                 ui.label(RichText::new(cat.to_uppercase()).size(10.5).strong().color(crate::theme::header()));
@@ -4991,6 +4991,26 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.label(RichText::new("Bins snap into the pockets. Glue or screw it into a drawer.").small().weak());
             sides(ui, gx, 1, 7, "wide (units)");
             sides(ui, gy, 1, 7, "deep (units)");
+        }
+        Shape::FlexiChain { segments, width, gap, snake } => {
+            ui.label(RichText::new("Prints in one piece and comes off the plate already moving. Flex it gently the first time.").small().weak());
+            ui.checkbox(snake, "Snake (head and tail)");
+            sides(ui, segments, 2, 60, "segments");
+            ui.add(egui::Slider::new(width, 6.0..=40.0).text("width (mm)"));
+            ui.add(egui::Slider::new(gap, 0.15..=0.8).text("joint gap (mm)"));
+        }
+        Shape::Spinner { rings, gap } => {
+            ui.label(RichText::new("Rings locked together by a V ridge — print flat, then spin. W sets the diameter, H the height.").small().weak());
+            sides(ui, rings, 2, 8, "rings");
+            ui.add(egui::Slider::new(gap, 0.15..=0.8).text("gap (mm)"));
+        }
+        Shape::GearPair { teeth1, teeth2, module, gap } => {
+            ui.label(RichText::new("Base with two posts set exactly the right distance apart, plus the two gears. Push the gears onto the posts.").small().weak());
+            sides(ui, teeth1, 8, 80, "teeth (gear 1)");
+            sides(ui, teeth2, 8, 80, "teeth (gear 2)");
+            ui.add(egui::Slider::new(module, 0.8..=4.0).text("tooth size (module)"));
+            ui.add(egui::Slider::new(gap, 0.1..=0.8).text("post gap (mm)"));
+            ui.label(RichText::new(format!("Ratio {}:{} = {:.2}", teeth1, teeth2, *teeth2 as f64 / *teeth1 as f64)).small());
         }
         Shape::FitTest => {
             ui.label(RichText::new("1. Print this (any PLA). 2. Push the peg into each hole. 3. Click the number of the TIGHTEST hole the peg still slides into by hand:").small());

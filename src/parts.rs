@@ -1289,3 +1289,206 @@ mod thread_tests {
         assert!(removed > 600.0 && removed < 1300.0, "{removed}");
     }
 }
+
+// ---- print-in-place moving parts
+
+fn prism2d(poly: Vec<DVec2>, z0: f64, z1: f64) -> Mesh {
+    solid(extrude(&[vec![poly]], z0, z1))
+}
+
+fn rect2d(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<DVec2> {
+    vec![DVec2::new(x0, y0), DVec2::new(x1, y0), DVec2::new(x1, y1), DVec2::new(x0, y1)]
+}
+
+/// The gap moving parts need: a little more than a sliding fit.
+pub fn pip_gap() -> f64 {
+    crate::settings::fit_gap().map(|g| (g + 0.1).clamp(0.2, 0.7)).unwrap_or(0.3)
+}
+
+/// A flexible print-in-place chain of segments joined by vertical knuckle joints.
+/// Every piece is a straight-up extrusion, so it prints with no supports and comes off moving.
+/// `snake` adds a head and a pointed tail.
+pub fn flexi_chain(segments: u32, width: f64, seg_len: f64, height: f64, gap: f64, snake: bool) -> Mesh {
+    let n = segments.clamp(2, 60) as usize;
+    let w = width.clamp(6.0, 40.0);
+    let g = gap.clamp(0.15, 0.8);
+    let r = 0.3 * w; // knuckle
+    let nw = (0.25 * w).max(2.0); // neck
+    let rb = (r + g + 1.6).max(w / 2.0); // ring of material around the knuckle (at least the body's half-width)
+    let seg = seg_len.max(rb * 2.0 + 2.0);
+    let h = height.clamp(2.0, 40.0);
+    let theta = 25f64.to_radians();
+    // knuckle and socket are chamfered top and bottom (45°) so the joint can't be pulled
+    // apart upward, and both still print without supports
+    let d = (0.8f64).min(r * 0.3).min(h * 0.2);
+    let g1 = g * 1.4;
+    // a short straight step at each end keeps the socket's lips from tapering to a knife edge
+    let st = 0.6f64.min(h * 0.1);
+    let knuckle = |x: f64| moved(rev(&[(0.0, 0.0), (r - d, 0.0), (r - d, st), (r, d + st), (r, h - d - st), (r - d, h - st), (r - d, h), (0.0, h)], 64), DVec3::new(x, 0.0, 0.0));
+    let socket = |x: f64| {
+        moved(
+            rev(&[(0.0, -1.0), (r - d + g1, -1.0), (r - d + g1, st), (r + g1, d + st), (r + g1, h - d - st), (r - d + g1, h - st), (r - d + g1, h + 1.0), (0.0, h + 1.0)], 64),
+            DVec3::new(x, 0.0, 0.0),
+        )
+    };
+    // the opening the neck swings in: a wedge with straight radial sides
+    let alpha = theta + ((nw / 2.0 + g) / (r + g)).asin();
+    // joint centres along +X
+    let joints: Vec<f64> = (0..n - 1).map(|j| seg * (j as f64 + 1.0)).collect();
+    let mut out = Mesh::new();
+    for s in 0..n {
+        let back = if s == 0 { None } else { Some(joints[s - 1]) };
+        let front = if s == n - 1 { None } else { Some(joints[s]) };
+        let x0 = back.unwrap_or(0.0);
+        let x1 = front.unwrap_or(seg * n as f64);
+        let mut parts = vec![prism2d(rect2d(x0, -w / 2.0, x1, w / 2.0), 0.0, h)];
+        if let Some(b) = back {
+            parts.push(cyl_z(b, 0.0, rb, 0.0, h, 48));
+        }
+        if snake && s == n - 1 {
+            // head: a rounded snout and a little wider
+            parts.push(cyl_z(x1, 0.0, w * 0.6, 0.0, h, 48));
+        }
+        let mut body = union(parts);
+        let mut cuts = vec![];
+        if let Some(f) = front {
+            cuts.push(cyl_z(f, 0.0, rb + g, -1.0, h + 1.0, 48));
+            // cut the front corners back along radial lines, so the edges meet the clearance
+            // arc square-on (no knife-thin slivers) and the next segment can swing freely
+            let beta = 50f64.to_radians();
+            let l = w / beta.sin();
+            for sy in [1.0, -1.0] {
+                cuts.push(prism2d(
+                    vec![
+                        DVec2::new(f, 0.0),
+                        DVec2::new(f - l * beta.cos(), sy * l * beta.sin()),
+                        DVec2::new(f - l * beta.cos(), sy * w),
+                        DVec2::new(f + 1.0, sy * w),
+                        DVec2::new(f + 1.0, 0.0),
+                    ],
+                    -1.0,
+                    h + 1.0,
+                ));
+            }
+        }
+        if let Some(b) = back {
+            cuts.push(socket(b));
+            let rr = rb + 1.5;
+            let mut wedge = vec![DVec2::new(b, 0.0)];
+            for k in 0..=12 {
+                let a = std::f64::consts::PI - alpha + 2.0 * alpha * k as f64 / 12.0;
+                wedge.push(DVec2::new(b, 0.0) + DVec2::from_angle(a) * rr);
+            }
+            cuts.push(prism2d(wedge, -1.0, h + 1.0));
+        }
+        if snake && s == 0 {
+            // pointed tail
+            cuts.push(prism2d(vec![DVec2::new(x0 - 1.0, -w), DVec2::new(x1 * 0.9, -w), DVec2::new(x0 - 1.0, -w * 0.15)], -1.0, h + 1.0));
+            cuts.push(prism2d(vec![DVec2::new(x0 - 1.0, w * 0.15), DVec2::new(x1 * 0.9, w), DVec2::new(x0 - 1.0, w)], -1.0, h + 1.0));
+        }
+        if !cuts.is_empty() {
+            body = cut(body, cuts);
+        }
+        if let Some(f) = front {
+            body = union(vec![body, prism2d(rect2d(f - rb - g - 0.5, -nw / 2.0, f - r + 0.5, nw / 2.0), 0.0, h), knuckle(f)]);
+        }
+        if snake && s == n - 1 {
+            // eyes (small dimples on top)
+            body = cut(body, vec![cyl_z(x1 + w * 0.2, w * 0.25, w * 0.08, h - 0.6, h + 1.0, 16), cyl_z(x1 + w * 0.2, -w * 0.25, w * 0.08, h - 0.6, h + 1.0, 16)]);
+        }
+        out.append(&body);
+    }
+    let b = out.bounds();
+    moved(out, DVec3::new(-b.center().x, -b.center().y, 0.0))
+}
+
+/// Concentric spinning rings (a print-in-place bearing / fidget ring). Each pair is locked
+/// together by a 45° V ridge, so nothing needs supports and the rings can't fall apart.
+pub fn spinner(rings: u32, diameter: f64, height: f64, gap: f64) -> Mesh {
+    let k = rings.clamp(2, 8) as usize;
+    let h = height.clamp(4.0, 40.0);
+    let g = gap.clamp(0.15, 0.8) * 1.5; // radial gap (the slopes are 45°)
+    let outer = diameter / 2.0;
+    let hole = (outer * 0.3).clamp(3.0, outer - k as f64 * 4.0);
+    let band = (outer - hole) / k as f64;
+    let d = (band * 0.3).min(h * 0.3).min(2.0); // ridge depth
+    // interface radius between ring i and i+1 (i = 0 innermost)
+    let iface = |i: usize| hole + band * (i as f64 + 1.0) - band * 0.5;
+    let ridge = |r0: f64, outward: f64| -> Vec<(f64, f64)> {
+        // the profile of an interface surface from bottom to top, pushed `outward`
+        vec![
+            (r0 + outward, 0.0),
+            (r0 + outward, h / 2.0 - d),
+            (r0 + d + outward, h / 2.0),
+            (r0 + outward, h / 2.0 + d),
+            (r0 + outward, h),
+        ]
+    };
+    let mut out = Mesh::new();
+    for i in 0..k {
+        // inner side (bottom → top), then outer side (top → bottom)
+        let inner: Vec<(f64, f64)> = if i == 0 { vec![(hole, 0.0), (hole, h)] } else { ridge(iface(i - 1), g) };
+        let outer_side: Vec<(f64, f64)> = if i == k - 1 { vec![(outer, h), (outer, 0.0)] } else { ridge(iface(i), 0.0).into_iter().rev().collect() };
+        let mut prof = inner;
+        prof.extend(outer_side);
+        let mut m = revolve_loop(&prof, 128);
+        m.weld(1e-9);
+        orient_outward(&mut m);
+        out.append(&m);
+    }
+    out
+}
+
+/// Two gears that mesh, plus a base with posts at exactly the right distance apart.
+/// Print it flat and push the gears onto the posts.
+pub fn gear_pair(teeth1: u32, teeth2: u32, module: f64, gap: f64) -> Mesh {
+    let m = module.clamp(0.8, 4.0);
+    let (z1, z2) = (teeth1.clamp(8, 80), teeth2.clamp(8, 80));
+    let (d1, d2) = (m * (z1 as f64 + 2.0), m * (z2 as f64 + 2.0));
+    let centre = m * (z1 + z2) as f64 / 2.0 + 0.15; // a hair of backlash
+    let thick = (m * 4.0).clamp(4.0, 12.0);
+    let post = (m * 3.0).clamp(4.0, 10.0);
+    let g = gap.clamp(0.1, 0.8);
+    let base_t = 3.0;
+    // base plate under both gears, posts sticking up
+    let (c1, c2) = (DVec2::new(-centre / 2.0, 0.0), DVec2::new(centre / 2.0, 0.0));
+    let bw = centre + d1.max(d2) * 0.5 + 8.0;
+    let bd = d1.max(d2) * 0.5 + 8.0;
+    let plate = cube(DVec3::new(-bw / 2.0, -bd / 2.0, 0.0), DVec3::new(bw / 2.0, bd / 2.0, base_t));
+    let p1 = cyl_z(c1.x, c1.y, post / 2.0, base_t - 0.01, base_t + thick + 1.0, 48);
+    let p2 = cyl_z(c2.x, c2.y, post / 2.0, base_t - 0.01, base_t + thick + 1.0, 48);
+    let mut base = union(vec![plate, p1, p2]);
+    // gears, printed beside the base
+    let g1 = gear(DVec3::new(d1, d1, thick), z1, post + 2.0 * g);
+    let g2 = gear(DVec3::new(d2, d2, thick), z2, post + 2.0 * g);
+    base.append(&moved(g1, DVec3::new(-bw / 2.0 + d1 / 2.0, -bd / 2.0 - 6.0 - d1.max(d2) / 2.0, 0.0)));
+    base.append(&moved(g2, DVec3::new(-bw / 2.0 + d1 + 6.0 + d2 / 2.0, -bd / 2.0 - 6.0 - d1.max(d2) / 2.0, 0.0)));
+    let b = base.bounds();
+    moved(base, DVec3::new(-b.center().x, -b.center().y, 0.0))
+}
+
+#[cfg(test)]
+mod moving_tests {
+    use super::*;
+    fn closed(m: &Mesh) -> bool {
+        let mut e = std::collections::HashSet::new();
+        for t in &m.tris {
+            for k in 0..3 {
+                e.insert((t[k], t[(k + 1) % 3]));
+            }
+        }
+        e.iter().all(|&(a, b)| e.contains(&(b, a)))
+    }
+    #[test]
+    fn moving_parts_are_separate_solids() {
+        let c = flexi_chain(6, 12.0, 14.0, 8.0, 0.3, true);
+        assert!(closed(&c));
+        assert_eq!(c.components().1, 6, "segments must not be fused");
+        let s = spinner(3, 50.0, 8.0, 0.3);
+        assert!(closed(&s));
+        assert_eq!(s.components().1, 3);
+        let gp = gear_pair(12, 20, 2.0, 0.3);
+        assert!(closed(&gp));
+        assert_eq!(gp.components().1, 3);
+    }
+}

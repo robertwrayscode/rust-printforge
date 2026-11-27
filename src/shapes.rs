@@ -63,6 +63,9 @@ pub enum Shape {
     FitTest,
     GridBin { gx: u32, gy: u32, hu: u32, div_x: u32, div_y: u32, magnets: bool, lip: bool },
     GridPlate { gx: u32, gy: u32 },
+    FlexiChain { segments: u32, width: f64, gap: f64, snake: bool },
+    Spinner { rings: u32, gap: f64 },
+    GearPair { teeth1: u32, teeth2: u32, module: f64, gap: f64 },
     /// Drawn outline (mm), extruded up or spun round the Y axis.
     Sketch {
         pts: Vec<[f64; 2]>,
@@ -140,6 +143,10 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Mounting", name: "Keyhole plate", shape: || Shape::KeyholePlate, default_size: [60.0, 30.0, 4.0] },
     ShapeInfo { category: "Mounting", name: "Cable comb", shape: || Shape::CableComb { slots: 5, cable: 5.0 }, default_size: [45.0, 10.0, 12.0] },
     ShapeInfo { category: "Mounting", name: "Desk grommet", shape: || Shape::Grommet { hole: 50.0 }, default_size: [60.0, 60.0, 20.0] },
+    ShapeInfo { category: "Moving parts", name: "Flexi snake", shape: || Shape::FlexiChain { segments: 12, width: 12.0, gap: 0.3, snake: true }, default_size: [172.8, 14.4, 8.4] },
+    ShapeInfo { category: "Moving parts", name: "Flexi chain", shape: || Shape::FlexiChain { segments: 10, width: 10.0, gap: 0.3, snake: false }, default_size: [118.0, 10.0, 7.0] },
+    ShapeInfo { category: "Moving parts", name: "Spinning rings", shape: || Shape::Spinner { rings: 3, gap: 0.3 }, default_size: [50.0, 50.0, 8.0] },
+    ShapeInfo { category: "Moving parts", name: "Gear pair", shape: || Shape::GearPair { teeth1: 12, teeth2: 24, module: 2.0, gap: 0.3 }, default_size: [86.0, 92.0, 12.0] },
     ShapeInfo { category: "Home & storage", name: "Gridfinity bin", shape: || Shape::GridBin { gx: 2, gy: 1, hu: 3, div_x: 2, div_y: 1, magnets: false, lip: true }, default_size: [83.5, 41.5, 25.4] },
     ShapeInfo { category: "Home & storage", name: "Gridfinity baseplate", shape: || Shape::GridPlate { gx: 3, gy: 2 }, default_size: [127.0, 85.0, 4.5] },
     ShapeInfo { category: "Home & storage", name: "Divided bin", shape: || Shape::DividedBin { cols: 3, rows: 2, wall: 1.6 }, default_size: [100.0, 60.0, 40.0] },
@@ -210,6 +217,10 @@ impl Shape {
             Shape::FitTest => "Fit test",
             Shape::GridBin { .. } => "Gridfinity bin",
             Shape::GridPlate { .. } => "Gridfinity baseplate",
+            Shape::FlexiChain { snake: true, .. } => "Flexi snake",
+            Shape::FlexiChain { .. } => "Flexi chain",
+            Shape::Spinner { .. } => "Spinning rings",
+            Shape::GearPair { .. } => "Gear pair",
             Shape::Sketch { spin: true, .. } => "Sketch (spun)",
             Shape::Sketch { .. } => "Sketch",
         }
@@ -224,6 +235,14 @@ impl Shape {
             Shape::PipeClamp { pipe } => Some(crate::parts::pipe_clamp_size(*pipe)),
             Shape::GridBin { gx, gy, hu, lip, .. } => Some(crate::parts::gridfinity_bin_size(*gx, *gy, *hu, *lip)),
             Shape::GridPlate { gx, gy } => Some(crate::parts::gridfinity_baseplate_size(*gx, *gy)),
+            Shape::FlexiChain { segments, width, gap, snake } => {
+                let b = crate::parts::flexi_chain(*segments, *width, width * 1.15, width * 0.7, *gap, *snake).bounds();
+                Some(b.max - b.min)
+            }
+            Shape::GearPair { teeth1, teeth2, module, gap } => {
+                let b = crate::parts::gear_pair(*teeth1, *teeth2, *module, *gap).bounds();
+                Some(b.max - b.min)
+            }
             Shape::Sketch { pts, round, spin, height, .. } => Some(crate::sketch::natural_size(pts, round, *spin, *height)),
             _ => None,
         }
@@ -407,6 +426,9 @@ impl Shape {
             Shape::FitTest => fit_test(size),
             Shape::GridBin { gx, gy, hu, div_x, div_y, magnets, lip } => gridfinity_bin(*gx, *gy, *hu, *div_x, *div_y, *magnets, *lip),
             Shape::GridPlate { gx, gy } => gridfinity_baseplate(*gx, *gy),
+            Shape::FlexiChain { segments, width, gap, snake } => flexi_chain(*segments, *width, width * 1.15, width * 0.7, *gap, *snake),
+            Shape::Spinner { rings, gap } => spinner(*rings, size.x.min(size.y), size.z, *gap),
+            Shape::GearPair { teeth1, teeth2, module, gap } => gear_pair(*teeth1, *teeth2, *module, *gap),
             Shape::Sketch { pts, round, spin, height, sides, wall, floor } => crate::sketch::build_hollow(pts, round, *spin, *height, *sides, *wall, *floor),
             _ => return None,
         })
@@ -418,6 +440,9 @@ impl Shape {
     pub fn apply_fit(&mut self, fit: f64) {
         let d = fit - 0.2;
         match self {
+            Shape::FlexiChain { gap, .. } | Shape::Spinner { gap, .. } | Shape::GearPair { gap, .. } => {
+                *gap = (fit + 0.1).clamp(0.2, 0.7);
+            }
             Shape::Lid { clearance, .. } | Shape::Nut { clearance, .. } | Shape::Hinge { clearance, .. } | Shape::Dovetail { clearance } | Shape::JarCap { clearance } => {
                 *clearance = (*clearance + d).clamp(0.05, 1.0);
             }

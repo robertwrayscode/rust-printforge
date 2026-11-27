@@ -2,6 +2,16 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.1.0 — 2026-11-26
+- **Moving parts** (new section in Shapes):
+  - **Flexi snake** and **Flexi chain**: print in one piece and come off the plate already
+    bending. Each joint is a round knuckle in a socket with 45° chamfers top and bottom, so it
+    can't pull apart and needs no supports. Set segments, width and joint gap.
+  - **Spinning rings**: 2–8 concentric rings locked by a 45° V-ridge — a print-in-place bearing.
+  - **Gear pair**: two gears with any tooth counts plus a base with posts at exactly the right
+    distance apart (shows the ratio). Push the gears onto the posts.
+  - Joint gaps follow your Fit test result (+0.1 mm) when it's set.
+
 ## 1.0.0 — 2026-11-26
 - **Version history** (File → Version history…): every save keeps a copy (the last 100 per
   design). See when each was saved and how many parts it had; **Restore** loads it (Ctrl+Z
