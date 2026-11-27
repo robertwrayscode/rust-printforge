@@ -83,6 +83,7 @@ pub enum Tool {
     SnapFaces,
     PushPull,
     Decal,
+    SurfaceText,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -273,6 +274,7 @@ pub struct App {
     recover_offer: bool,
     show_overhangs: bool,
     xray: bool,
+    stext: crate::surface_text::SurfaceText,
     edge_radius: f64,
     edge_chamfer: bool,
     edge_skip_bottom: bool,
@@ -368,6 +370,7 @@ impl App {
             recover_offer: crate::settings::autosave_path().map(|p| p.exists()).unwrap_or(false),
             show_overhangs: false,
             xray: false,
+            stext: crate::surface_text::SurfaceText { text: "HELLO".into(), font: crate::shapes::FontChoice::Sans, height: 8.0, engrave: false, depth: 1.0, rotation: 0.0, color: 3, from_view: false },
             edge_radius: 2.0,
             edge_chamfer: false,
             edge_skip_bottom: true,
@@ -1742,6 +1745,96 @@ impl App {
         Some((o.id, lf, wf))
     }
 
+    fn stext_frame(&self, h: &Hit) -> Option<(u64, crate::surface_text::Frame)> {
+        let e = self.entries.get(h.entry)?;
+        if e.hole || (h.tri as usize) >= e.mesh.tris.len() {
+            return None;
+        }
+        let iv = self.camera.view().inverse();
+        let (back, cam_up) = (iv.transform_vector3(DVec3::Z).normalize(), iv.transform_vector3(DVec3::Y).normalize());
+        let n = if self.stext.from_view {
+            back
+        } else {
+            let (n, _) = e.mesh.tri_normal_area(h.tri as usize);
+            if n.dot(back) < 0.0 { back } else { n }
+        };
+        Some((e.id, self.stext.frame(h.point, n, cam_up)))
+    }
+
+    fn apply_stext(&mut self, h: &Hit) {
+        let Some((id, wf)) = self.stext_frame(h) else { return };
+        let Some(o) = self.doc.find(id).cloned() else { return };
+        if o.locked {
+            self.status = "That part is locked.".into();
+            return;
+        }
+        let mut wm = self.cache.world_mesh(&o);
+        wm.fill_unset_color(o.color);
+        match self.stext.apply(&wm, &wf) {
+            Ok(mut m) => {
+                let inv = o.transform().inverse();
+                for v in &mut m.verts {
+                    *v = inv.transform_point3(*v);
+                }
+                crate::shapes::orient_outward(&mut m);
+                let (mm, size, off) = normalize_mesh(m);
+                // the part may have grown (raised text): keep it where it was
+                if let Some(ob) = self.doc.find_mut(id) {
+                    // keep every point where it was: solve for the new position given the new size
+                    let mir = DVec3::new(if ob.mirror[0] { -1.0 } else { 1.0 }, if ob.mirror[1] { -1.0 } else { 1.0 }, if ob.mirror[2] { -1.0 } else { 1.0 });
+                    let rm = |v: DVec3| ob.rotation() * (v * mir);
+                    let half = DVec3::new(0.0, 0.0, ob.size.z * 0.5);
+                    let half2 = DVec3::new(0.0, 0.0, size.z * 0.5);
+                    ob.pos = ob.pos + half - half2 + rm(off - half + half2);
+                    ob.size = size;
+                    ob.kind = Kind::Mesh(Arc::new(mm));
+                    ob.paint = None;
+                }
+                self.selection = vec![id];
+                self.touch();
+                self.status = format!("{} '{}' on '{}'. Ctrl+Z undoes it.", if self.stext.engrave { "Cut" } else { "Raised" }, self.stext.text, o.name);
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    fn stext_panel(&mut self, ui: &mut egui::Ui) {
+        crate::theme::section(ui, "Text on a part");
+        ui.label("Move over a part to place the text, then click.");
+        let st = &mut self.stext;
+        ui.add(egui::TextEdit::singleline(&mut st.text).hint_text("Your text"));
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut st.engrave, false, "Raised");
+            ui.radio_value(&mut st.engrave, true, "Cut in");
+        });
+        ui.add(egui::Slider::new(&mut st.height, 2.0..=80.0).text("letter height (mm)"));
+        ui.add(egui::Slider::new(&mut st.depth, 0.2..=5.0).text(if st.engrave { "depth (mm)" } else { "raised by (mm)" }));
+        ui.add(egui::Slider::new(&mut st.rotation, -180.0..=180.0).text("turn (°)"));
+        ui.horizontal(|ui| {
+            ui.label("Font");
+            ui.radio_value(&mut st.font, crate::shapes::FontChoice::Sans, "Sans");
+            ui.radio_value(&mut st.font, crate::shapes::FontChoice::Mono, "Mono");
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Colour");
+            for (i, f) in self.doc.filaments.iter().enumerate() {
+                let (r, resp) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                ui.painter().rect_filled(r, 3.0, c32(f.color));
+                if st.color as usize == i {
+                    ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, crate::theme::accent()), egui::StrokeKind::Outside);
+                }
+                if resp.on_hover_text(&f.name).clicked() {
+                    st.color = i as u8;
+                }
+            }
+        });
+        ui.checkbox(&mut st.from_view, "Project from my view").on_hover_text("Off: lies flat on the face you point at. On: straight from the screen — good for round parts.");
+        ui.label(RichText::new("Letters at least 5 mm tall and 0.6 mm deep print cleanly. Cut-in letters are filled with the colour you pick.").small().weak());
+        if ui.button("Done").clicked() {
+            self.tool = Tool::Select;
+        }
+    }
+
     fn apply_decal(&mut self, h: &Hit) {
         let Some((id, lf, _)) = self.decal_frame(h) else { return };
         let Some(o) = self.doc.find(id).cloned() else { return };
@@ -2602,6 +2695,9 @@ impl App {
             if ui.selectable_label(self.ai.open, "✨ AI helper").on_hover_text("Describe what you want and an AI builds it (your local model or Claude)").clicked() {
                 self.ai.open = !self.ai.open;
             }
+            if ui.selectable_label(self.tool == Tool::SurfaceText, "Aa Text on part").on_hover_text("Raised or cut-in lettering on any face of a part, flat or curved").clicked() {
+                tool = if self.tool == Tool::SurfaceText { Tool::Select } else { Tool::SurfaceText };
+            }
             if ui.button("✏ Sketch").on_hover_text("Draw your own outline, then push it up or spin it into a 3D part").clicked() {
                 self.sketch = Some(crate::sketch::SketchEditor::new());
             }
@@ -2886,6 +2982,7 @@ impl App {
                     }
                 }
                 Tool::Decal => self.decal_panel(ui),
+                Tool::SurfaceText => self.stext_panel(ui),
                 Tool::PushPull => {
                     crate::theme::section(ui, "Push / Pull a face");
                     ui.label("Click a flat face, then drag it outward to extrude or inward to cut. Or type an exact distance below.");
@@ -3761,6 +3858,11 @@ impl App {
                         self.apply_decal(&h);
                     }
                 }
+                Tool::SurfaceText => {
+                    if let Some(h) = hit {
+                        self.apply_stext(&h);
+                    }
+                }
             }
         }
 
@@ -3839,6 +3941,18 @@ impl App {
                 let pts: Vec<Pos2> = cs.iter().filter_map(|c| self.camera.project(rect, *c)).collect();
                 if pts.len() == 4 {
                     painter.add(egui::Shape::convex_polygon(pts.clone(), Color32::from_rgba_unmultiplied(255, 150, 40, 50), Stroke::new(2.0, Color32::from_rgb(255, 150, 40))));
+                }
+            }
+        }
+        if self.tool == Tool::SurfaceText {
+            if let Some((_, wf)) = self.hover.as_ref().and_then(|h| self.stext_frame(h)) {
+                let cs = self.stext.corners(&wf);
+                let pts: Vec<Pos2> = cs.iter().filter_map(|c| self.camera.project(rect, *c)).collect();
+                if pts.len() == 4 {
+                    let col = self.doc.filaments.get(self.stext.color as usize).map(|f| f.color).unwrap_or([255, 255, 255]);
+                    painter.add(egui::Shape::convex_polygon(pts.clone(), Color32::from_rgba_unmultiplied(col[0], col[1], col[2], 70), Stroke::new(2.0, crate::theme::accent())));
+                    let c = Pos2::new(pts.iter().map(|p| p.x).sum::<f32>() / 4.0, pts.iter().map(|p| p.y).sum::<f32>() / 4.0);
+                    painter.text(c, egui::Align2::CENTER_CENTER, &self.stext.text, egui::FontId::proportional(((pts[0].distance(pts[3])) * 0.8).clamp(8.0, 60.0)), Color32::WHITE);
                 }
             }
         }

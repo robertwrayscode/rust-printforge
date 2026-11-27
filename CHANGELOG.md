@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.9.3 — 2026-11-26
+- **Aa Text on part** (tools bar): raised or cut-in lettering on any face of a part — flat or
+  curved (letters follow a cylinder's curve). Pick text, letter height, how far it sticks out or
+  cuts in, turn, font and colour; a preview follows the mouse and a click puts it on.
+  Cut-in letters are filled with the chosen colour, so they print as coloured inlays.
+
 ## 0.9.2 — 2026-11-26
 - **Split into pieces** (Inspector): cut any part across X, Y or Z — an orange plane shows where.
   Optional alignment pins: RoboForge finds two spots well inside the cut, makes matching holes
