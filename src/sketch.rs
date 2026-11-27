@@ -249,10 +249,13 @@ pub struct SketchEditor {
     pub floor: f64,
     /// object being edited (None = new part)
     pub editing: Option<u64>,
+    /// Cookie cutter mode: (wall, height, flange) of the cutter being drawn.
+    pub cookie: Option<[f64; 3]>,
     scale: f32,
     pan: Vec2,
     drag: Option<usize>,
     history: Vec<(Vec<[f64; 2]>, Vec<bool>)>,
+    message: Option<String>,
 }
 
 pub enum SketchResult {
@@ -263,7 +266,7 @@ pub enum SketchResult {
 
 impl SketchEditor {
     pub fn new() -> Self {
-        Self { pts: vec![], round: vec![], spin: false, height: 10.0, sides: 64, snap: 1.0, hollow: false, wall: 2.0, floor: 2.0, editing: None, scale: 6.0, pan: Vec2::ZERO, drag: None, history: vec![] }
+        Self { pts: vec![], round: vec![], spin: false, height: 10.0, sides: 64, snap: 1.0, hollow: false, wall: 2.0, floor: 2.0, editing: None, cookie: None, scale: 6.0, pan: Vec2::ZERO, drag: None, history: vec![], message: None }
     }
 
     pub fn from_shape(s: &Shape, id: u64) -> Option<Self> {
@@ -277,6 +280,15 @@ impl SketchEditor {
             e.wall = *wall;
             e.floor = if *floor > 0.0 { *floor } else { 2.0 };
             e.hollow = *wall > 0.0;
+            e.editing = Some(id);
+            e.fit();
+            Some(e)
+        } else if let Shape::CookieCutter { pts, round, wall, height, flange } = s {
+            let mut e = Self::new();
+            e.pts = pts.clone();
+            e.round = if round.len() == pts.len() { round.clone() } else { vec![false; pts.len()] };
+            e.cookie = Some([*wall, *height, *flange]);
+            e.snap = 0.5;
             e.editing = Some(id);
             e.fit();
             Some(e)
@@ -302,6 +314,9 @@ impl SketchEditor {
     }
 
     fn shape(&self) -> Shape {
+        if let Some([wall, height, flange]) = self.cookie {
+            return Shape::CookieCutter { pts: self.pts.clone(), round: self.round.clone(), wall, height, flange };
+        }
         let hollow = self.spin && self.hollow;
         Shape::Sketch {
             pts: self.pts.clone(),
@@ -311,6 +326,24 @@ impl SketchEditor {
             sides: self.sides,
             wall: if hollow { self.wall } else { 0.0 },
             floor: if hollow { self.floor } else { 0.0 },
+        }
+    }
+
+    fn trace(&mut self, path: &std::path::Path, invert: bool) {
+        let size = crate::makers::cutter_natural_size(&self.pts, &crate::makers::CutterOptions { wall: 0.0, height: 0.0, flange: 0.0 });
+        let size = if self.pts.len() >= 3 { size.x.max(size.y).clamp(20.0, 200.0) } else { 70.0 };
+        match crate::imaging::load_picture(path) {
+            Ok(pic) => match crate::makers::trace_picture(&pic, invert, size) {
+                Some(p) => {
+                    self.save_undo();
+                    self.round = vec![false; p.len()];
+                    self.message = Some(format!("Traced {} points. Drag any that look wrong, or right-click to delete them.", p.len()));
+                    self.pts = p;
+                    self.fit();
+                }
+                None => self.message = Some("Couldn't find a shape in that picture. Try the other trace button.".into()),
+            },
+            Err(e) => self.message = Some(format!("Couldn't open the picture: {e}")),
         }
     }
 
@@ -324,12 +357,35 @@ impl SketchEditor {
     pub fn show(&mut self, ctx: &egui::Context) -> SketchResult {
         let mut result = SketchResult::None;
         let mut open = true;
-        let title = if self.editing.is_some() { "Edit sketch" } else { "Sketch a shape" };
+        let title = if self.cookie.is_some() { "Cookie cutter outline" } else if self.editing.is_some() { "Edit sketch" } else { "Sketch a shape" };
+        if self.cookie.is_some() {
+            self.spin = false;
+        }
         egui::Window::new(title).open(&mut open).collapsible(false).resizable(false).default_width(640.0).show(ctx, |ui| {
+            if self.cookie.is_some() {
+                ui.label(RichText::new("Draw the cookie's shape as seen from above, or trace it from a picture (a dark shape on a light background works best, like a colouring-page outline filled in).").small().weak());
+                ui.horizontal(|ui| {
+                    if ui.button("🖼 Trace a picture…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file() {
+                            self.trace(&p, false);
+                        }
+                    }
+                    if ui.button("Trace (light shape on dark)…").clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg"]).pick_file() {
+                            self.trace(&p, true);
+                        }
+                    }
+                });
+                if let Some(msg) = &self.message {
+                    ui.label(RichText::new(msg).small());
+                }
+            } else {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.spin, false, "⬆ Extrude (push up)");
                 ui.selectable_value(&mut self.spin, true, "⟳ Spin around an axis");
             });
+            }
+            if self.cookie.is_none() {
             ui.label(
                 RichText::new(if self.spin {
                     "Draw half the side view, right of the green axis. It spins round the axis (vases, knobs, bottles)."
@@ -339,6 +395,7 @@ impl SketchEditor {
                 .small()
                 .weak(),
             );
+            }
             ui.label(RichText::new("Click to add a point (click on a line to insert one) · drag points to move · right-click a point to delete · double-click a point to round it · scroll to zoom, right-drag to pan").small().weak());
             let (rect, resp) = ui.allocate_exact_size(Vec2::new(620.0, 430.0), Sense::click_and_drag());
             self.canvas(ui, rect, &resp);
@@ -346,7 +403,7 @@ impl SketchEditor {
                 if self.spin {
                     ui.add(egui::Slider::new(&mut self.sides, 8..=256).text("smoothness"));
                     ui.checkbox(&mut self.hollow, "Hollow (open top)").on_hover_text("Makes a cup/vase: the inside follows your outline so the wall is the same thickness everywhere");
-                } else {
+                } else if self.cookie.is_none() {
                     ui.add(egui::Slider::new(&mut self.height, 0.2..=300.0).text("height (mm)"));
                 }
                 ui.label("Grid snap");
@@ -372,6 +429,9 @@ impl SketchEditor {
                     ("Vase profile", vec![[0.0, 0.0], [15.0, 0.0], [20.0, 15.0], [10.0, 35.0], [12.0, 50.0], [0.0, 50.0]], vec![false, false, true, true, false, false]),
                 ];
                 for (name, p, r) in presets {
+                    if self.cookie.is_some() && name == "Vase profile" {
+                        continue;
+                    }
                     if ui.button(name).clicked() {
                         self.save_undo();
                         if name == "Vase profile" {
@@ -399,8 +459,13 @@ impl SketchEditor {
             if let Some(p) = &prob {
                 ui.colored_label(Color32::from_rgb(240, 170, 60), p);
             } else {
+                if let Some([wall, height, flange]) = self.cookie {
+                    let s = crate::makers::cutter_natural_size(&crate::makers::cutter_outline(&self.pts, &self.round), &crate::makers::CutterOptions { wall, height, flange });
+                    ui.label(format!("Cutter size: {:.1} × {:.1} mm (you can resize it after)", s.x, s.y));
+                } else {
                 let s = natural_size(&self.pts, &self.round, self.spin, self.height);
                 ui.label(format!("Size: {:.1} × {:.1} × {:.1} mm", s.x, s.y, s.z));
+                }
                 if self.spin && self.hollow && cavity(&self.pts, &self.round, self.wall, self.floor).is_none() {
                     ui.colored_label(Color32::from_rgb(240, 170, 60), "Too narrow to hollow with this wall — it will stay solid. Use a thinner wall, or make sure the outline touches the axis at the bottom.");
                 }

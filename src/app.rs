@@ -1328,8 +1328,13 @@ impl App {
                     ui.add(egui::Image::new(t).fit_to_exact_size(Vec2::new(w, h.min(260.0))));
                 }
                 ui.horizontal_wrapped(|ui| {
-                    for (m, n) in [(ImageMode::Lithophane, "Lithophane"), (ImageMode::Relief, "Raised relief"), (ImageMode::ColourPlate, "Colour plate")] {
+                    for (m, n) in [(ImageMode::Lithophane, "Lithophane"), (ImageMode::Relief, "Raised relief"), (ImageMode::ColourPlate, "Colour plate"), (ImageMode::LampShade, "Lamp shade")] {
                         if ui.selectable_label(!d.decal && d.opts.mode == m, n).clicked() {
+                            if m == ImageMode::LampShade && d.opts.mode != m {
+                                d.opts.width_mm = 80.0;
+                                d.opts.min_mm = 0.8;
+                                d.opts.max_mm = 3.0;
+                            }
                             d.opts.mode = m;
                             d.decal = false;
                         }
@@ -1370,10 +1375,27 @@ impl App {
                     ImageMode::Lithophane => "Thin where the photo is bright, thick where dark. Print in white and hold it up to a light. Tip: print it standing up for best detail.",
                     ImageMode::Relief => "A plate with the bright parts raised (tick Invert to raise the dark parts).",
                     ImageMode::ColourPlate => "A flat plate whose top is coloured with your filaments — each spot uses the closest filament colour.",
+                    ImageMode::LampShade => "A round lithophane: the photo wraps round a tube. Print in white PLA, then put an LED tea light inside. Wide photos (panoramas) work best.",
                 };
                 ui.label(RichText::new(hint).small().weak());
-                ui.add(egui::Slider::new(&mut d.opts.width_mm, 20.0..=300.0).text("width (mm)"));
+                if d.opts.mode == ImageMode::LampShade {
+                    ui.add(egui::Slider::new(&mut d.opts.width_mm, 40.0..=200.0).text("diameter (mm)"));
+                } else {
+                    ui.add(egui::Slider::new(&mut d.opts.width_mm, 20.0..=300.0).text("width (mm)"));
+                }
                 match d.opts.mode {
+                    ImageMode::LampShade => {
+                        ui.add(egui::Slider::new(&mut d.opts.min_mm, 0.4..=3.0).text("thinnest (mm)"));
+                        ui.add(egui::Slider::new(&mut d.opts.max_mm, 1.0..=6.0).text("thickest (mm)"));
+                        ui.add(egui::Slider::new(&mut d.opts.repeats, 1..=4).text("times round"));
+                        let h = crate::imaging::lamp_height(&d.pic, &d.opts);
+                        ui.label(format!("Height: {h:.0} mm"));
+                        if h > 300.0 {
+                            ui.colored_label(Color32::from_rgb(240, 170, 60), "Too tall for the H2C — make it narrower or repeat the picture more times.");
+                        } else if h < 25.0 {
+                            ui.colored_label(Color32::from_rgb(240, 170, 60), "Very short — use fewer repeats or a wider shade.");
+                        }
+                    }
                     ImageMode::Lithophane => {
                         ui.add(egui::Slider::new(&mut d.opts.min_mm, 0.4..=3.0).text("thinnest (mm)"));
                         ui.add(egui::Slider::new(&mut d.opts.max_mm, 1.0..=8.0).text("thickest (mm)"));
@@ -1404,7 +1426,8 @@ impl App {
                         });
                     }
                 }
-                ui.add(egui::Slider::new(&mut d.opts.border_mm, 0.0..=10.0).text("frame (mm)"));
+                let frame = if d.opts.mode == ImageMode::LampShade { "solid rims (mm)" } else { "frame (mm)" };
+                ui.add(egui::Slider::new(&mut d.opts.border_mm, 0.0..=10.0).text(frame));
                 ui.add(egui::Slider::new(&mut d.opts.detail, 1.0..=8.0).text("detail (points/mm)"));
                 if d.opts.mode != ImageMode::ColourPlate {
                     ui.checkbox(&mut d.opts.invert, "Invert");
@@ -1432,6 +1455,7 @@ impl App {
                 crate::imaging::ImageMode::Lithophane => "Lithophane",
                 crate::imaging::ImageMode::Relief => "Relief",
                 crate::imaging::ImageMode::ColourPlate => "Photo plate",
+                crate::imaging::ImageMode::LampShade => "Lamp shade",
             };
             let id = self.place_new_mesh(name, mesh);
             self.selection = vec![id];
@@ -2632,6 +2656,7 @@ impl App {
                     }
                 }
                 Kind::Shape(Shape::QrCode { dark, .. }) if *dark == from as u32 => *dark = to as u32,
+                Kind::Shape(Shape::Keychain { text_color, .. }) if *text_color == from as u32 => *text_color = to as u32,
                 _ => {}
             }
         }
@@ -2808,7 +2833,7 @@ impl App {
                     self.import();
                     ui.close();
                 }
-                if ui.button("Picture to 3D (lithophane, relief, colour plate)…").clicked() {
+                if ui.button("Picture to 3D (lithophane, lamp shade, relief, colour plate)…").clicked() {
                     if let Some(p) = rfd::FileDialog::new().add_filter("Pictures", &["png", "jpg", "jpeg", "bmp", "webp", "gif"]).pick_file() {
                         self.open_image(p);
                     }
@@ -3020,7 +3045,7 @@ impl App {
             }
             let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
             let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
-            for cat in ["Basic shapes", "Moving parts", "Electronics", "Hardware", "Mounting", "Home & storage"] {
+            for cat in ["Basic shapes", "Quick makers", "Moving parts", "Electronics", "Hardware", "Mounting", "Home & storage"] {
             if cat != "Basic shapes" {
                 ui.add_space(4.0);
                 ui.label(RichText::new(cat.to_uppercase()).size(10.5).strong().color(crate::theme::header()));
@@ -3455,8 +3480,13 @@ impl App {
             if matches!(s, Shape::Sketch { .. }) && ui.button("✏ Edit sketch…").clicked() {
                 open_sketch = crate::sketch::SketchEditor::from_shape(s, o.id);
             }
+            if matches!(s, Shape::CookieCutter { .. }) && ui.button("✏ Draw or trace the outline…").clicked() {
+                open_sketch = crate::sketch::SketchEditor::from_shape(s, o.id);
+            }
             if format!("{s:?}") != before_params {
-                if let Some(n) = s.natural_size() {
+                if let Shape::CookieCutter { height, .. } = s {
+                    o.size.z = *height;
+                } else if let Some(n) = s.natural_size() {
                     o.size = n;
                 }
             }
@@ -5165,6 +5195,44 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.label(RichText::new("Bins snap into the pockets. Glue or screw it into a drawer.").small().weak());
             sides(ui, gx, 1, 7, "wide (units)");
             sides(ui, gy, 1, 7, "deep (units)");
+        }
+        Shape::Keychain { text, font, letter_h, border, thick, raise, ring, text_color } => {
+            ui.add(egui::TextEdit::singleline(text).hint_text("Name"));
+            ui.horizontal(|ui| {
+                ui.radio_value(font, FontChoice::Sans, "Sans");
+                ui.radio_value(font, FontChoice::Mono, "Mono");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Ring");
+                ui.radio_value(ring, 1, "Left");
+                ui.radio_value(ring, 2, "Top");
+                ui.radio_value(ring, 0, "None");
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Letter colour");
+                for c in 0..8u32 {
+                    let (r, resp) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+                    ui.painter().rect_filled(r, 3.0, c32(crate::scene::default_filaments().get(c as usize).map(|f| f.color).unwrap_or([128, 128, 128])));
+                    if *text_color == c {
+                        ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, crate::theme::accent()), egui::StrokeKind::Outside);
+                    }
+                    if resp.clicked() {
+                        *text_color = c;
+                    }
+                }
+            });
+            ui.add(egui::Slider::new(letter_h, 6.0..=40.0).text("letter height (mm)"));
+            ui.add(egui::Slider::new(border, 1.5..=8.0).text("border (mm)"));
+            ui.add(egui::Slider::new(thick, 2.0..=6.0).text("tag thickness (mm)"));
+            ui.add(egui::Slider::new(raise, 0.6..=3.0).text("letters raised (mm)"));
+            ui.label(RichText::new("The tag colour is the part's colour above. Bambu Studio swaps filament once, where the letters start.").small().weak());
+        }
+        Shape::CookieCutter { pts, wall, height, flange, .. } => {
+            ui.label(RichText::new(format!("Outline: {} points. Size it with W and D below — the walls stay the same thickness.", pts.len())).small().weak());
+            ui.add(egui::Slider::new(wall, 0.8..=2.0).text("cutting wall (mm)"));
+            ui.add(egui::Slider::new(height, 8.0..=30.0).text("height (mm)"));
+            ui.add(egui::Slider::new(flange, 0.0..=6.0).text("grip rim (mm)"));
+            ui.label(RichText::new("Print in PLA or PETG and hand wash. Use it on cold dough.").small().weak());
         }
         Shape::QrCode { wifi, text, ssid, password, open, raise, nfc, dark } => {
             ui.horizontal(|ui| {

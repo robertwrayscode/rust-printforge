@@ -13,6 +13,8 @@ pub enum ImageMode {
     Relief,
     /// Flat plate whose top is coloured with your filaments (nearest match per pixel).
     ColourPlate,
+    /// A round lithophane: the picture wraps round a cylinder (light goes inside).
+    LampShade,
 }
 
 #[derive(Clone, Debug)]
@@ -28,6 +30,8 @@ pub struct ImageOptions {
     pub detail: f64,
     /// filaments allowed for the colour plate
     pub use_filaments: Vec<bool>,
+    /// lamp shade: how many times the picture goes round
+    pub repeats: u32,
 }
 
 impl Default for ImageOptions {
@@ -41,6 +45,7 @@ impl Default for ImageOptions {
             border_mm: 3.0,
             detail: 4.0,
             use_filaments: vec![true; 24],
+            repeats: 1,
         }
     }
 }
@@ -153,7 +158,74 @@ pub fn nearest_filament(rgb: [f64; 3], fils: &[Filament], allowed: &[bool]) -> u
 }
 
 /// Build a part from a picture. Returns (mesh at its natural size on z=0, description).
+/// Height of a lamp shade for this picture (including the solid rims).
+pub fn lamp_height(pic: &Picture, o: &ImageOptions) -> f64 {
+    let circ = std::f64::consts::PI * o.width_mm;
+    circ / o.repeats.max(1) as f64 * pic.h as f64 / pic.w as f64 + 2.0 * o.border_mm.max(0.0)
+}
+
+/// Round lithophane: `width_mm` is the outside diameter, `border_mm` solid rims top and
+/// bottom. Open at both ends so it slips over a tea light or LED puck.
+pub fn lamp_shade(pic: &Picture, o: &ImageOptions) -> Mesh {
+    use std::f64::consts::TAU;
+    let r_out = o.width_mm / 2.0;
+    let (tmin, tmax) = (o.min_mm.min(o.max_mm), o.max_mm.max(o.min_mm));
+    let r_in = r_out - tmax;
+    let reps = o.repeats.max(1) as f64;
+    let b = o.border_mm.max(0.0);
+    let height = lamp_height(pic, o);
+    let circ = TAU * r_out;
+    let nu = ((circ * o.detail) as usize).clamp(48, 600);
+    let nv = ((height * o.detail) as usize).clamp(8, 400);
+    let thick = |i: usize, j: usize| -> f64 {
+        let z = height * j as f64 / (nv - 1) as f64;
+        if z < b || z > height - b {
+            return tmax;
+        }
+        let u = (i as f64 / nu as f64 * reps).fract();
+        let v = 1.0 - (z - b) / (height - 2.0 * b).max(1e-6);
+        let mut l = pic.lum(u, v);
+        if o.invert {
+            l = 1.0 - l;
+        }
+        tmin + (1.0 - l) * (tmax - tmin)
+    };
+    let mut m = Mesh::new();
+    let ang = |i: usize| TAU * i as f64 / nu as f64;
+    // outside surface: nu × nv, wrapping round
+    let outer: Vec<u32> = (0..nv)
+        .flat_map(|j| (0..nu).map(move |i| (i, j)))
+        .map(|(i, j)| {
+            let r = r_in + thick(i, j);
+            let a = ang(i);
+            m.add_vert(DVec3::new(r * a.cos(), r * a.sin(), height * j as f64 / (nv - 1) as f64))
+        })
+        .collect();
+    let inner_bot: Vec<u32> = (0..nu).map(|i| m.add_vert(DVec3::new(r_in * ang(i).cos(), r_in * ang(i).sin(), 0.0))).collect();
+    let inner_top: Vec<u32> = (0..nu).map(|i| m.add_vert(DVec3::new(r_in * ang(i).cos(), r_in * ang(i).sin(), height))).collect();
+    let o_at = |i: usize, j: usize| outer[j * nu + i % nu];
+    for j in 0..nv - 1 {
+        for i in 0..nu {
+            m.add_quad(o_at(i, j), o_at(i + 1, j), o_at(i + 1, j + 1), o_at(i, j + 1));
+        }
+    }
+    for i in 0..nu {
+        let k = (i + 1) % nu;
+        // inside wall (faces inwards)
+        m.add_quad(inner_bot[k], inner_bot[i], inner_top[i], inner_top[k]);
+        // bottom ring (faces down)
+        m.add_quad(inner_bot[i], inner_bot[k], o_at(i + 1, 0), o_at(i, 0));
+        // top ring (faces up)
+        m.add_quad(inner_top[k], inner_top[i], o_at(i, nv - 1), o_at(i + 1, nv - 1));
+    }
+    crate::shapes::orient_outward(&mut m);
+    m
+}
+
 pub fn picture_to_mesh(pic: &Picture, o: &ImageOptions, fils: &[Filament]) -> Mesh {
+    if o.mode == ImageMode::LampShade {
+        return lamp_shade(pic, o);
+    }
     let aspect = pic.h as f64 / pic.w as f64;
     let (w, d) = (o.width_mm, o.width_mm * aspect);
     let max_pts = 420.0;
@@ -169,6 +241,7 @@ pub fn picture_to_mesh(pic: &Picture, o: &ImageOptions, fils: &[Filament]) -> Me
         }
     };
     match o.mode {
+        ImageMode::LampShade => lamp_shade(pic, o),
         ImageMode::Lithophane => {
             let h = |i: usize, j: usize| match inside(i, j) {
                 None => o.max_mm,
@@ -370,6 +443,24 @@ pub fn svg_meshes(layers: &[SvgLayer], width_mm: f64, height_mm: f64) -> Vec<([u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lamp_shade_closed() {
+        let pic = Picture { w: 4, h: 2, rgba: (0..32).map(|k| if k % 8 < 4 { 0 } else { 255 }).collect() };
+        let o = ImageOptions { mode: ImageMode::LampShade, width_mm: 80.0, detail: 2.0, ..Default::default() };
+        let m = lamp_shade(&pic, &o);
+        let mut edges: std::collections::HashMap<(u32, u32), i32> = Default::default();
+        for t in &m.tris {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        assert!(edges.values().all(|c| *c == 2));
+        assert!(m.volume() > 0.0);
+        let b = m.bounds();
+        assert!((b.max.x - 40.0).abs() < 0.01 && (b.max.z - lamp_height(&pic, &o)).abs() < 0.01);
+    }
 
     #[test]
     fn heightfield_is_watertight() {

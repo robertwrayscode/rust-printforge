@@ -67,6 +67,10 @@ pub enum Shape {
     Spinner { rings: u32, gap: f64 },
     GearPair { teeth1: u32, teeth2: u32, module: f64, gap: f64 },
     QrCode { wifi: bool, text: String, ssid: String, password: String, open: bool, raise: f64, nfc: bool, dark: u32 },
+    /// Name keychain. ring: 0 none, 1 left, 2 top.
+    Keychain { text: String, font: FontChoice, letter_h: f64, border: f64, thick: f64, raise: f64, ring: u32, text_color: u32 },
+    /// Cookie cutter following a drawn or traced outline.
+    CookieCutter { pts: Vec<[f64; 2]>, #[serde(default)] round: Vec<bool>, wall: f64, height: f64, flange: f64 },
     Enclosure { board: u32, custom_w: f64, custom_d: f64, extra_h: f64, vents: bool, wall_mount: bool, gap: f64 },
     /// Drawn outline (mm), extruded up or spun round the Y axis.
     Sketch {
@@ -145,6 +149,8 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Mounting", name: "Keyhole plate", shape: || Shape::KeyholePlate, default_size: [60.0, 30.0, 4.0] },
     ShapeInfo { category: "Mounting", name: "Cable comb", shape: || Shape::CableComb { slots: 5, cable: 5.0 }, default_size: [45.0, 10.0, 12.0] },
     ShapeInfo { category: "Mounting", name: "Desk grommet", shape: || Shape::Grommet { hole: 50.0 }, default_size: [60.0, 60.0, 20.0] },
+    ShapeInfo { category: "Quick makers", name: "Name keychain", shape: || Shape::Keychain { text: "Robert".into(), font: FontChoice::Sans, letter_h: 12.0, border: 3.0, thick: 3.0, raise: 1.5, ring: 1, text_color: 1 }, default_size: [70.0, 22.0, 4.5] },
+    ShapeInfo { category: "Quick makers", name: "Cookie cutter", shape: || Shape::CookieCutter { pts: crate::makers::default_cutter_outline(), round: vec![], wall: 1.0, height: 14.0, flange: 3.0 }, default_size: [72.0, 64.0, 14.0] },
     ShapeInfo { category: "Electronics", name: "Wi-Fi QR code", shape: || Shape::QrCode { wifi: true, text: String::new(), ssid: "MyNetwork".into(), password: "password".into(), open: false, raise: 1.0, nfc: false, dark: 1 }, default_size: [60.0, 60.0, 4.0] },
     ShapeInfo { category: "Electronics", name: "QR code", shape: || Shape::QrCode { wifi: false, text: "https://www.bambulab.com".into(), ssid: String::new(), password: String::new(), open: false, raise: 1.0, nfc: false, dark: 1 }, default_size: [50.0, 50.0, 4.0] },
     ShapeInfo { category: "Electronics", name: "Board case", shape: || Shape::Enclosure { board: 0, custom_w: 60.0, custom_d: 40.0, extra_h: 0.0, vents: true, wall_mount: false, gap: 0.25 }, default_size: [91.0, 132.0, 27.1] },
@@ -227,6 +233,8 @@ impl Shape {
             Shape::Spinner { .. } => "Spinning rings",
             Shape::GearPair { .. } => "Gear pair",
             Shape::Enclosure { .. } => "Board case",
+            Shape::Keychain { .. } => "Name keychain",
+            Shape::CookieCutter { .. } => "Cookie cutter",
             Shape::QrCode { wifi: true, .. } => "Wi-Fi QR code",
             Shape::QrCode { .. } => "QR code",
             Shape::Sketch { spin: true, .. } => "Sketch (spun)",
@@ -256,6 +264,11 @@ impl Shape {
                 Some(b.max - b.min)
             }
             Shape::Sketch { pts, round, spin, height, .. } => Some(crate::sketch::natural_size(pts, round, *spin, *height)),
+            Shape::Keychain { .. } => {
+                let b = self.generate_part(DVec3::ONE)?.bounds();
+                Some(b.max - b.min)
+            }
+            Shape::CookieCutter { pts, round, wall, height, flange } => Some(crate::makers::cutter_natural_size(&crate::makers::cutter_outline(pts, round), &crate::makers::CutterOptions { wall: *wall, height: *height, flange: *flange })),
             _ => None,
         }
     }
@@ -458,6 +471,34 @@ impl Shape {
                 wall_mount: *wall_mount,
                 gap: *gap,
             }),
+            Shape::Keychain { text, font, letter_h, border, thick, raise, ring, text_color } => {
+                let m = crate::makers::keychain(&crate::makers::KeychainOptions {
+                    text,
+                    font: *font,
+                    letter_h: *letter_h,
+                    border: *border,
+                    thick: *thick,
+                    raise: *raise,
+                    ring: match ring {
+                        0 => crate::makers::Ring::None,
+                        2 => crate::makers::Ring::Top,
+                        _ => crate::makers::Ring::Left,
+                    },
+                    text_color: *text_color as u8,
+                });
+                if m.tris.is_empty() {
+                    return None;
+                }
+                m
+            }
+            Shape::CookieCutter { pts, round, wall, height, flange } => {
+                let p: Vec<DVec2> = crate::makers::cutter_outline(pts, round).iter().map(|q| DVec2::new(q[0], q[1])).collect();
+                let m = crate::makers::cookie_cutter(&p, size.x, size.y, &crate::makers::CutterOptions { wall: *wall, height: *height, flange: *flange });
+                if m.tris.is_empty() {
+                    return None;
+                }
+                m
+            }
             Shape::Sketch { pts, round, spin, height, sides, wall, floor } => crate::sketch::build_hollow(pts, round, *spin, *height, *sides, *wall, *floor),
             _ => return None,
         })
@@ -615,9 +656,12 @@ pub fn extrude(groups: &[Vec<Vec<DVec2>>], z0: f64, z1: f64) -> Mesh {
         let bot: Vec<u32> = all.iter().map(|p| m.add_vert(DVec3::new(p.x, p.y, z0))).collect();
         let top: Vec<u32> = all.iter().map(|p| m.add_vert(DVec3::new(p.x, p.y, z1))).collect();
         if let Ok(idx) = earcutr::earcut(&flat, &holes, 2) {
+            // earcut winds every triangle the same way; decide from the total so sliver
+            // triangles can't flip
+            let total: f64 = idx.chunks(3).map(|t| (all[t[1]] - all[t[0]]).perp_dot(all[t[2]] - all[t[0]])).sum();
+            let ccw = total > 0.0;
             for t in idx.chunks(3) {
                 let (a, b, c) = (t[0], t[1], t[2]);
-                let ccw = (all[b] - all[a]).perp_dot(all[c] - all[a]) > 0.0;
                 if ccw {
                     m.add_tri(top[a], top[b], top[c]);
                     m.add_tri(bot[a], bot[c], bot[b]);

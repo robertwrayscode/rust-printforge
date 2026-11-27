@@ -9,6 +9,7 @@ pub mod decal;
 pub mod demo;
 pub mod edges;
 pub mod io;
+pub mod makers;
 pub mod materials;
 pub mod mesh;
 pub mod render;

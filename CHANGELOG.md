@@ -2,6 +2,16 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.6.0 — 2026-11-26
+- **Quick makers** (new section in Shapes):
+  - **Name keychain:** type a name; the tag follows the letters, with a key-ring hole on the
+    left or top and the letters raised in a second colour.
+  - **Cookie cutter:** draw the outline or **trace a picture** (a dark shape on a light
+    background). Walls stay the same thickness when you resize it; optional grip rim.
+- **Lamp shade** in Picture to 3D: a round lithophane that slips over an LED tea light. Set the
+  diameter and how many times the picture goes round.
+- Fixed: flat tops of extruded shapes could have a few flipped triangles.
+
 ## 1.5.0 — 2026-11-26
 - **Multiple plates:** tabs at the top-left of the view. **+ Plate** adds one; click a tab to
   work on that plate. **Move to: Plate N** in the Inspector moves the selected parts. Right-click
