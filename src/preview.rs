@@ -152,6 +152,54 @@ fn layer_of(z: f64, layers: usize) -> usize {
     ((z / LAYER_H).floor().max(0.0) as usize).min(layers - 1)
 }
 
+/// One suggestion: print colour `from` with colour `to` instead.
+pub struct Merge {
+    pub from: u8,
+    pub to: u8,
+    pub swaps_saved: usize,
+    pub time_saved_s: f64,
+    /// how different the two colours look (0 = identical, ~440 = black vs white)
+    pub distance: f64,
+}
+
+/// Try replacing each colour with each other colour and rank by colour changes saved.
+pub fn merge_suggestions(objects: &[Mesh], fils: &[Filament], base: &Estimate) -> Vec<Merge> {
+    let used: Vec<u8> = (0..64u8).filter(|&c| base.layer_colors.iter().any(|m| m & (1 << c) != 0)).collect();
+    let mut out = vec![];
+    for &from in &used {
+        for &to in &used {
+            if from == to {
+                continue;
+            }
+            let remapped: Vec<Mesh> = objects
+                .iter()
+                .map(|m| {
+                    let mut m = m.clone();
+                    for c in m.colors.iter_mut() {
+                        if *c == from {
+                            *c = to;
+                        }
+                    }
+                    m
+                })
+                .collect();
+            let e = estimate(&remapped, fils);
+            if e.swaps < base.swaps {
+                let (a, b) = (fils.get(from as usize).map(|f| f.color).unwrap_or([0; 3]), fils.get(to as usize).map(|f| f.color).unwrap_or([0; 3]));
+                let distance = (0..3).map(|k| (a[k] as f64 - b[k] as f64).powi(2)).sum::<f64>().sqrt();
+                out.push(Merge { from, to, swaps_saved: base.swaps - e.swaps, time_saved_s: base.time_s - e.time_s, distance });
+            }
+        }
+    }
+    // biggest saving first; among equal savings prefer the closest-looking colour
+    out.sort_by(|a, b| b.swaps_saved.cmp(&a.swaps_saved).then(a.distance.total_cmp(&b.distance)));
+    // one suggestion per colour removed
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|m| seen.insert(m.from));
+    out.truncate(4);
+    out
+}
+
 pub fn fmt_time(s: f64) -> String {
     let m = (s / 60.0).round() as u64;
     if m < 60 { format!("{m} min") } else { format!("{} h {:02} min", m / 60, m % 60) }

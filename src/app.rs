@@ -183,6 +183,7 @@ impl Default for AiPanel {
 struct PreviewState {
     meshes: Vec<Mesh>,
     est: crate::preview::Estimate,
+    merges: Option<Vec<crate::preview::Merge>>,
     /// layers shown: 1..=est.layers
     layer: usize,
     edits: u64,
@@ -1914,7 +1915,7 @@ impl App {
             Some(p) if p.layer < p.est.layers => p.layer.min(est.layers),
             _ => est.layers,
         };
-        self.preview = Some(PreviewState { meshes: objs, est, layer, edits: self.edits });
+        self.preview = Some(PreviewState { meshes: objs, est, merges: None, layer, edits: self.edits });
     }
 
     fn preview_panel(&mut self, ui: &mut egui::Ui) {
@@ -1996,6 +1997,48 @@ impl App {
             ui.label(RichText::new("Lots of colour changes. Fewer colours per layer (or colours that start at a layer boundary) print much faster.").small().color(Color32::from_rgb(240, 170, 60)));
         }
         ui.label(RichText::new("Rough estimate (±30%) using standard 15% infill and 2 walls. Bambu Studio shows exact numbers after slicing.").small().weak());
+        if e.swaps > 0 {
+            ui.add_space(6.0);
+            crate::theme::section(ui, "Save time");
+            let mut apply: Option<(u8, u8)> = None;
+            match &self.preview.as_ref().unwrap().merges {
+                None => {
+                    if ui.button("Find ways to cut colour changes").clicked() {
+                        let pv = self.preview.as_mut().unwrap();
+                        pv.merges = Some(crate::preview::merge_suggestions(&pv.meshes, &fils, &pv.est));
+                    }
+                }
+                Some(list) if list.is_empty() => {
+                    ui.label(RichText::new("No single colour swap saves any changes — this design is already efficient.").small());
+                }
+                Some(list) => {
+                    for m in list {
+                        let (fa, fb) = (fils.get(m.from as usize), fils.get(m.to as usize));
+                        ui.horizontal_wrapped(|ui| {
+                            for f in [fa, fb] {
+                                let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                ui.painter().rect_filled(r, 3.0, c32(f.map(|f| f.color).unwrap_or([128; 3])));
+                            }
+                            let look = if m.distance < 40.0 { "nearly the same colour" } else if m.distance < 120.0 { "a similar colour" } else { "a different colour" };
+                            ui.label(format!(
+                                "Print {} as {} ({look}): {} fewer changes, about {} faster",
+                                fa.map(|f| f.name.as_str()).unwrap_or("?"),
+                                fb.map(|f| f.name.as_str()).unwrap_or("?"),
+                                m.swaps_saved,
+                                crate::preview::fmt_time(m.time_saved_s)
+                            ));
+                            if ui.small_button("Apply").clicked() {
+                                apply = Some((m.from, m.to));
+                            }
+                        });
+                    }
+                    ui.label(RichText::new("Apply recolours the design (Ctrl+Z undoes it).").small().weak());
+                }
+            }
+            if let Some((from, to)) = apply {
+                self.remap_color(from, to);
+            }
+        }
         if ui.button("Close preview").clicked() {
             self.preview = None;
             self.geometry_dirty = true;
@@ -2480,6 +2523,46 @@ impl App {
             }
             Err(e) => self.status = e,
         }
+    }
+
+    /// Everything printed in filament `from` is printed in `to` instead.
+    fn remap_color(&mut self, from: u8, to: u8) {
+        fn fix(o: &mut Object, from: u8, to: u8) {
+            if o.color == from {
+                o.color = to;
+            }
+            if let Some(p) = &mut o.paint {
+                for c in p.iter_mut() {
+                    if *c == from {
+                        *c = to;
+                    }
+                }
+            }
+            match &mut o.kind {
+                Kind::Mesh(m) if m.colors.contains(&from) => {
+                    let mut mm = (**m).clone();
+                    for c in mm.colors.iter_mut() {
+                        if *c == from {
+                            *c = to;
+                        }
+                    }
+                    *m = Arc::new(mm);
+                }
+                Kind::Group { children, .. } => {
+                    for ch in children.iter_mut() {
+                        fix(ch, from, to);
+                    }
+                }
+                Kind::Shape(Shape::QrCode { dark, .. }) if *dark == from as u32 => *dark = to as u32,
+                _ => {}
+            }
+        }
+        for o in self.doc.objects.iter_mut() {
+            fix(o, from, to);
+        }
+        self.touch();
+        let names = |i: u8| self.doc.filaments.get(i as usize).map(|f| f.name.clone()).unwrap_or_default();
+        self.status = format!("{} is now printed as {}.", names(from), names(to));
     }
 
     fn sketch_window(&mut self, ctx: &egui::Context) {

@@ -2,6 +2,11 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.4.0 — 2026-11-26
+- **Save time** in the Print preview: "Find ways to cut colour changes" tries printing each
+  colour as each of the others and lists the swaps that save the most changes, with the time
+  saved and whether the colours look alike. **Apply** recolours the design (Ctrl+Z undoes it).
+
 ## 1.3.0 — 2026-11-26
 - **Wi-Fi QR code** and **QR code** (Electronics): a plaque with the code raised in a second
   colour. Wi-Fi codes let guests join by pointing a phone camera at it (WPA or open networks);
