@@ -64,6 +64,7 @@ own settings in the Inspector:
 
 ### Pictures and logos
 - **Picture to 3D:** lithophanes, raised reliefs and multi-colour photo plates from PNG/JPG.
+- **QR code plaques** (Wi-Fi login or any link) with an optional NFC tag pocket.
 - **Board cases** for Raspberry Pi 4/5, Arduino Uno, ESP32 or custom boards.
 - **Print-in-place moving parts:** flexi snake/chain, spinning rings, gear pairs.
 - **Round/bevel edges, split into pieces with alignment pins, add threads, text on any surface, version history.**

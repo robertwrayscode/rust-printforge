@@ -2,6 +2,13 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.3.0 — 2026-11-26
+- **Wi-Fi QR code** and **QR code** (Electronics): a plaque with the code raised in a second
+  colour. Wi-Fi codes let guests join by pointing a phone camera at it (WPA or open networks);
+  the other kind holds any link or text (Home Assistant dashboards, manuals…). Optional pocket
+  underneath for a 25 mm NFC sticker. Only the top layers change colour, so it prints quickly.
+  Checked by rendering and decoding the code.
+
 ## 1.2.0 — 2026-11-26
 - **Board case** (new Electronics section): a case for Raspberry Pi 5, Raspberry Pi 4,
   Arduino Uno R3, ESP32 DevKitC or a custom board size. Screw posts with pilot holes at the

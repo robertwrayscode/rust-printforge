@@ -4992,6 +4992,48 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             sides(ui, gx, 1, 7, "wide (units)");
             sides(ui, gy, 1, 7, "deep (units)");
         }
+        Shape::QrCode { wifi, text, ssid, password, open, raise, nfc, dark } => {
+            ui.horizontal(|ui| {
+                ui.radio_value(wifi, true, "Wi-Fi login");
+                ui.radio_value(wifi, false, "Link or text");
+            });
+            if *wifi {
+                ui.horizontal(|ui| {
+                    ui.label("Network");
+                    ui.text_edit_singleline(ssid);
+                });
+                ui.checkbox(open, "Open network (no password)");
+                if !*open {
+                    ui.horizontal(|ui| {
+                        ui.label("Password");
+                        ui.add(egui::TextEdit::singleline(password).password(true));
+                    });
+                }
+                ui.label(RichText::new("Guests point their phone camera at it to join. The password is printed into the code, so anyone who scans it can read it.").small().weak());
+            } else {
+                ui.add(egui::TextEdit::multiline(text).desired_rows(2).hint_text("https://… or any text"));
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Code colour");
+                for c in 0..8u32 {
+                    let (r, resp) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::click());
+                    ui.painter().rect_filled(r, 3.0, c32(crate::scene::default_filaments().get(c as usize).map(|f| f.color).unwrap_or([128, 128, 128])));
+                    if *dark == c {
+                        ui.painter().rect_stroke(r, 3.0, Stroke::new(2.0, crate::theme::accent()), egui::StrokeKind::Outside);
+                    }
+                    if resp.clicked() {
+                        *dark = c;
+                    }
+                }
+            });
+            ui.add(egui::Slider::new(raise, 0.4..=3.0).text("raised (mm)"));
+            ui.checkbox(nfc, "Pocket underneath for a 25 mm NFC sticker");
+            let payload = if *wifi { crate::parts::wifi_payload(ssid, password, *open) } else { text.clone() };
+            let cells = crate::parts::qr_modules(&payload);
+            if cells > 0 {
+                ui.label(RichText::new(format!("{cells}×{cells} squares — make the plaque at least {} mm wide so each square is 1 mm or more.", cells)).small().weak());
+            }
+        }
         Shape::Enclosure { board, custom_w, custom_d, extra_h, vents, wall_mount, gap } => {
             let boards = crate::parts::BOARDS;
             egui::ComboBox::from_id_salt("enc_board").selected_text(boards[(*board as usize).min(boards.len() - 1)].name).show_ui(ui, |ui| {

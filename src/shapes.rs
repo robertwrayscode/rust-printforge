@@ -66,6 +66,7 @@ pub enum Shape {
     FlexiChain { segments: u32, width: f64, gap: f64, snake: bool },
     Spinner { rings: u32, gap: f64 },
     GearPair { teeth1: u32, teeth2: u32, module: f64, gap: f64 },
+    QrCode { wifi: bool, text: String, ssid: String, password: String, open: bool, raise: f64, nfc: bool, dark: u32 },
     Enclosure { board: u32, custom_w: f64, custom_d: f64, extra_h: f64, vents: bool, wall_mount: bool, gap: f64 },
     /// Drawn outline (mm), extruded up or spun round the Y axis.
     Sketch {
@@ -144,6 +145,8 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Mounting", name: "Keyhole plate", shape: || Shape::KeyholePlate, default_size: [60.0, 30.0, 4.0] },
     ShapeInfo { category: "Mounting", name: "Cable comb", shape: || Shape::CableComb { slots: 5, cable: 5.0 }, default_size: [45.0, 10.0, 12.0] },
     ShapeInfo { category: "Mounting", name: "Desk grommet", shape: || Shape::Grommet { hole: 50.0 }, default_size: [60.0, 60.0, 20.0] },
+    ShapeInfo { category: "Electronics", name: "Wi-Fi QR code", shape: || Shape::QrCode { wifi: true, text: String::new(), ssid: "MyNetwork".into(), password: "password".into(), open: false, raise: 1.0, nfc: false, dark: 1 }, default_size: [60.0, 60.0, 4.0] },
+    ShapeInfo { category: "Electronics", name: "QR code", shape: || Shape::QrCode { wifi: false, text: "https://www.bambulab.com".into(), ssid: String::new(), password: String::new(), open: false, raise: 1.0, nfc: false, dark: 1 }, default_size: [50.0, 50.0, 4.0] },
     ShapeInfo { category: "Electronics", name: "Board case", shape: || Shape::Enclosure { board: 0, custom_w: 60.0, custom_d: 40.0, extra_h: 0.0, vents: true, wall_mount: false, gap: 0.25 }, default_size: [91.0, 132.0, 27.1] },
     ShapeInfo { category: "Moving parts", name: "Flexi snake", shape: || Shape::FlexiChain { segments: 12, width: 12.0, gap: 0.3, snake: true }, default_size: [172.8, 14.4, 8.4] },
     ShapeInfo { category: "Moving parts", name: "Flexi chain", shape: || Shape::FlexiChain { segments: 10, width: 10.0, gap: 0.3, snake: false }, default_size: [118.0, 10.0, 7.0] },
@@ -224,6 +227,8 @@ impl Shape {
             Shape::Spinner { .. } => "Spinning rings",
             Shape::GearPair { .. } => "Gear pair",
             Shape::Enclosure { .. } => "Board case",
+            Shape::QrCode { wifi: true, .. } => "Wi-Fi QR code",
+            Shape::QrCode { .. } => "QR code",
             Shape::Sketch { spin: true, .. } => "Sketch (spun)",
             Shape::Sketch { .. } => "Sketch",
         }
@@ -436,6 +441,14 @@ impl Shape {
             Shape::FlexiChain { segments, width, gap, snake } => flexi_chain(*segments, *width, width * 1.15, width * 0.7, *gap, *snake),
             Shape::Spinner { rings, gap } => spinner(*rings, size.x.min(size.y), size.z, *gap),
             Shape::GearPair { teeth1, teeth2, module, gap } => gear_pair(*teeth1, *teeth2, *module, *gap),
+            Shape::QrCode { wifi, text, ssid, password, open, raise, nfc, dark } => {
+                let payload = if *wifi { crate::parts::wifi_payload(ssid, password, *open) } else { text.clone() };
+                let w = size.x.min(size.y);
+                match qr_plaque(&payload, w, *raise, *dark as u8, *nfc) {
+                    Ok(m) => crate::scene::fit_to_size(&m, size),
+                    Err(_) => Shape::Box { radius: 0.0, steps: 1 }.generate(DVec3::new(size.x, size.y, 3.0)),
+                }
+            }
             Shape::Enclosure { board, custom_w, custom_d, extra_h, vents, wall_mount, gap } => enclosure(&EnclosureOptions {
                 board: *board as usize,
                 custom_w: *custom_w,

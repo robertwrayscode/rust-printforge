@@ -1665,3 +1665,71 @@ mod enclosure_tests {
         }
     }
 }
+
+// ---- QR codes
+
+/// Wi-Fi join code as phones expect it.
+pub fn wifi_payload(ssid: &str, password: &str, open: bool) -> String {
+    let esc = |s: &str| s.chars().map(|c| if "\\;,:\"".contains(c) { format!("\\{c}") } else { c.to_string() }).collect::<String>();
+    if open {
+        format!("WIFI:T:nopass;S:{};;", esc(ssid))
+    } else {
+        format!("WIFI:T:WPA;S:{};P:{};;", esc(ssid), esc(password))
+    }
+}
+
+/// A square plaque with a raised QR code in a second colour (only the top layers change
+/// colour, so it prints quickly). Optional pocket underneath for a 25 mm NFC sticker.
+pub fn qr_plaque(payload: &str, width: f64, raise: f64, dark: u8, nfc: bool) -> Result<Mesh, String> {
+    let code = qrcode::QrCode::with_error_correction_level(payload.as_bytes(), qrcode::EcLevel::M).map_err(|e| format!("Couldn't make a QR code from that text ({e})."))?;
+    let n = code.width();
+    let quiet = 2usize;
+    let cells = n + 2 * quiet;
+    let module = width / cells as f64;
+    let plate_t = 3.0;
+    let raise = raise.clamp(0.4, 3.0);
+    let half = width / 2.0;
+    let plate = cube(DVec3::new(-half, -half, 0.0), DVec3::new(half, half, plate_t));
+    let eps = 0.01;
+    let mut dots = Mesh::new();
+    let colors = code.to_colors();
+    for y in 0..n {
+        for x in 0..n {
+            if colors[y * n + x] == qrcode::Color::Dark {
+                let x0 = -half + (x + quiet) as f64 * module;
+                let y0 = half - (y + quiet + 1) as f64 * module; // row 0 at the top
+                let mut b = cube(DVec3::new(x0 + eps, y0 + eps, plate_t - 0.5), DVec3::new(x0 + module - eps, y0 + module - eps, plate_t + raise));
+                b.colors = vec![dark; b.tris.len()];
+                dots.append(&b);
+            }
+        }
+    }
+    let mut out = crate::csg::combine(&[plate, dots], &[]).mesh;
+    if nfc {
+        out = crate::csg::combine(&[out], &[cyl_z(0.0, 0.0, 13.0, -1.0, 1.0, 64)]).mesh;
+    }
+    if module < 0.8 {
+        return Err(format!("At {width:.0} mm the QR squares are only {module:.2} mm — too small to print cleanly. Make it bigger or the text shorter."));
+    }
+    Ok(out)
+}
+
+pub fn qr_modules(payload: &str) -> usize {
+    qrcode::QrCode::with_error_correction_level(payload.as_bytes(), qrcode::EcLevel::M).map(|c| c.width() + 4).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod qr_tests {
+    use super::*;
+    #[test]
+    fn qr_plaque_is_solid_and_two_colour() {
+        let p = wifi_payload("Wray Home", "s3cret;pass", false);
+        assert!(p.contains("P:s3cret\\;pass"));
+        let m = qr_plaque(&p, 60.0, 1.0, 1, true).unwrap();
+        assert!(m.colors.iter().any(|&c| c == 1));
+        assert!(m.colors.iter().any(|&c| c == crate::mesh::NO_COLOR));
+        let b = m.bounds();
+        assert!((b.max.z - 4.0).abs() < 1e-6 && (b.max.x - b.min.x - 60.0).abs() < 1e-6);
+        assert!(qr_plaque("x", 10.0, 1.0, 1, false).is_err());
+    }
+}

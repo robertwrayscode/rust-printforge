@@ -1,6 +1,6 @@
 [package]
 name = "roboforge"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 description = "Tinkercad-style 3D designer with colour export and print checking for Bambu Lab printers"
 license = "MIT"
@@ -21,6 +21,7 @@ glam = { version = "0.32", features = ["mint", "serde"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
 mint = "0.5.9"
 png = "0.18.1"
+qrcode = { version = "0.15.0", default-features = false }
 quick-xml = "0.42.0"
 rayon = "1.12.0"
 rfd = "0.18.0"
