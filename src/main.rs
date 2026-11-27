@@ -14,6 +14,7 @@ pub mod mesh;
 pub mod render;
 pub mod scene;
 pub mod shapes;
+pub mod split;
 pub mod sketch;
 pub mod thumbs;
 pub mod theme;

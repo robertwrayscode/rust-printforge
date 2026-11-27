@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 0.9.2 — 2026-11-26
+- **Split into pieces** (Inspector): cut any part across X, Y or Z — an orange plane shows where.
+  Optional alignment pins: RoboForge finds two spots well inside the cut, makes matching holes
+  in both pieces (sized with your Fit test gap) and adds the pins as separate parts. Cutting
+  across Z puts the top piece on the plate cut-face down, beside the bottom piece.
+
 ## 0.9.1 — 2026-11-26
 - **Round / bevel edges** for any solid part (Inspector → "Round / bevel edges"): pick Round or
   Bevel and a size, then "Apply to all sharp outside edges". Works on boxes, text, groups,

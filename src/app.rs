@@ -277,6 +277,12 @@ pub struct App {
     edge_chamfer: bool,
     edge_skip_bottom: bool,
     edge_apply: Option<u64>,
+    split_axis: usize,
+    split_at: Option<(u64, usize, f64)>,
+    split_pins: bool,
+    split_pin_d: f64,
+    split_preview: Option<(u64, usize, f64)>,
+    split_apply: Option<u64>,
     preview: Option<PreviewState>,
     xray_edges: HashMap<u64, Arc<Vec<(Vec3, Vec3)>>>,
     bands: Vec<(f64, u8)>,
@@ -366,6 +372,12 @@ impl App {
             edge_chamfer: false,
             edge_skip_bottom: true,
             edge_apply: None,
+            split_axis: 0,
+            split_at: None,
+            split_pins: true,
+            split_pin_d: 5.0,
+            split_preview: None,
+            split_apply: None,
             preview: None,
             xray_edges: HashMap::new(),
             bands: vec![(0.0, 0), (5.0, 2)],
@@ -2189,6 +2201,61 @@ impl App {
         }
     }
 
+    fn apply_split(&mut self, id: u64) {
+        let Some(o) = self.doc.find(id).cloned() else { return };
+        let Some((_, axis, at)) = self.split_at.filter(|s| s.0 == id) else { return };
+        let mut wm = self.cache.world_mesh(&o);
+        wm.fill_unset_color(o.color);
+        let gap = crate::settings::fit_gap().unwrap_or(0.15).max(0.05);
+        let opts = crate::split::SplitOptions { axis, at, pins: self.split_pins, pin_d: self.split_pin_d, pin_len: (self.split_pin_d * 2.0).max(6.0), gap };
+        let r = match crate::split::split(&wm, &opts) {
+            Ok(r) => r,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        self.doc.objects.retain(|x| x.id != id);
+        let mut ids = vec![];
+        for (k, m) in [r.low, r.high].into_iter().enumerate() {
+            let (mm, size, off) = normalize_mesh(m);
+            let nid = self.doc.alloc_id();
+            let mut ob = Object::new(nid, &format!("{} (piece {})", o.name, k + 1), Kind::Mesh(Arc::new(mm)), size);
+            ob.color = o.color;
+            ob.pos = off;
+            if k == 1 {
+                if axis == 2 {
+                    // top piece: put it on the plate, cut face down, beside the bottom piece
+                    ob.pos.z = 0.0;
+                    ob.pos.x += (wm.bounds().max.x - wm.bounds().min.x) + 10.0;
+                } else {
+                    ob.pos[axis] += 10.0;
+                }
+            }
+            self.doc.objects.push(ob);
+            ids.push(nid);
+        }
+        let b = wm.bounds();
+        for (i, _) in r.pin_spots.iter().enumerate() {
+            let nid = self.doc.alloc_id();
+            let d = self.split_pin_d;
+            let len = (d * 2.0).max(6.0);
+            let mut ob = Object::new(nid, "Alignment pin", Kind::Shape(Shape::Cylinder { sides: 32, bevel: 0.4 }), DVec3::new(d, d, len));
+            ob.color = o.color;
+            ob.pos = DVec3::new(b.min.x + i as f64 * (d + 5.0) + d / 2.0, b.min.y - d - 8.0, 0.0);
+            self.doc.objects.push(ob);
+            ids.push(nid);
+        }
+        self.selection = ids;
+        self.split_at = None;
+        self.touch();
+        self.status = if r.pin_spots.is_empty() && self.split_pins {
+            "Split into 2 pieces. No room for alignment pins on this cut (needs a thicker cross-section).".into()
+        } else {
+            format!("Split into 2 pieces{}. Click Make it printable to lay them flat.", if r.pin_spots.is_empty() { String::new() } else { format!(" with {} alignment pin(s)", r.pin_spots.len()) })
+        };
+    }
+
     fn apply_edges(&mut self, id: u64) {
         let Some(o) = self.doc.find(id).cloned() else { return };
         let mut wm = self.cache.world_mesh(&o);
@@ -2869,7 +2936,11 @@ impl App {
                 Tool::Select => {}
             }
             if self.tool == Tool::Select || !self.selection.is_empty() {
+                self.split_preview = None;
                 self.inspector(ui);
+                if let Some(id) = self.split_apply.take() {
+                    self.apply_split(id);
+                }
                 if let Some(id) = self.edge_apply.take() {
                     self.apply_edges(id);
                 }
@@ -3032,6 +3103,32 @@ impl App {
                     self.edge_apply = Some(o.id);
                 }
                 ui.label(RichText::new("The part becomes a mesh, so its shape settings no longer apply. Ctrl+Z undoes it.").small().weak());
+            });
+            let wb = self.world_bounds(o.id);
+            egui::CollapsingHeader::new("Split into pieces").id_salt("split_hdr").show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Cut across");
+                    for (i, n) in ["X", "Y", "Z"].iter().enumerate() {
+                        ui.radio_value(&mut self.split_axis, i, *n);
+                    }
+                });
+                let a = self.split_axis;
+                let (lo, hi) = (wb.min[a], wb.max[a]);
+                let mut at = match self.split_at {
+                    Some((id, ax, v)) if id == o.id && ax == a => v,
+                    _ => (lo + hi) / 2.0,
+                };
+                ui.add(egui::Slider::new(&mut at, (lo + 1.0)..=(hi - 1.0).max(lo + 1.0)).text("cut at (mm)"));
+                self.split_at = Some((o.id, a, at));
+                self.split_preview = Some((o.id, a, at));
+                ui.checkbox(&mut self.split_pins, "Alignment pins (printed separately, glue in)");
+                if self.split_pins {
+                    ui.add(egui::Slider::new(&mut self.split_pin_d, 2.0..=10.0).text("pin diameter (mm)"));
+                }
+                if ui.button("Split").clicked() {
+                    self.split_apply = Some(o.id);
+                }
+                ui.label(RichText::new("The orange plane shows the cut. Then use Make it printable to lay the pieces flat.").small().weak());
             });
         }
         ui.separator();
@@ -3720,6 +3817,29 @@ impl App {
                     painter.circle_stroke(a, a.distance(b2).max(2.0) + 1.5, Stroke::new(1.0, Color32::WHITE));
                 }
                 let _ = p;
+            }
+        }
+        if let Some((id, a, at)) = self.split_preview {
+            if self.doc.find(id).is_some() {
+                let b = self.world_bounds(id);
+                let (lo, hi) = (b.min - DVec3::splat(3.0), b.max + DVec3::splat(3.0));
+                let (u, v) = match a {
+                    0 => (1, 2),
+                    1 => (0, 2),
+                    _ => (0, 1),
+                };
+                let mut cs = vec![];
+                for (pu, pv) in [(lo[u], lo[v]), (hi[u], lo[v]), (hi[u], hi[v]), (lo[u], hi[v])] {
+                    let mut p = DVec3::ZERO;
+                    p[a] = at;
+                    p[u] = pu;
+                    p[v] = pv;
+                    cs.push(p);
+                }
+                let pts: Vec<Pos2> = cs.iter().filter_map(|c| self.camera.project(rect, *c)).collect();
+                if pts.len() == 4 {
+                    painter.add(egui::Shape::convex_polygon(pts.clone(), Color32::from_rgba_unmultiplied(255, 150, 40, 50), Stroke::new(2.0, Color32::from_rgb(255, 150, 40))));
+                }
             }
         }
         if self.tool == Tool::Decal {
