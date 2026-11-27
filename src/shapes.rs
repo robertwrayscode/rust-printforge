@@ -68,7 +68,7 @@ pub enum Shape {
     GearPair { teeth1: u32, teeth2: u32, module: f64, gap: f64 },
     QrCode { wifi: bool, text: String, ssid: String, password: String, open: bool, raise: f64, nfc: bool, dark: u32 },
     /// Single print-in-place toy joint.
-    FlexiJoint { width: f64, gap: f64, swing: f64 },
+    FlexiJoint { width: f64, gap: f64, swing: f64, #[serde(default)] kind: u32 },
     /// Name keychain. ring: 0 none, 1 left, 2 top.
     Keychain { text: String, font: FontChoice, letter_h: f64, border: f64, thick: f64, raise: f64, ring: u32, text_color: u32 },
     /// Cookie cutter following a drawn or traced outline.
@@ -158,7 +158,11 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Electronics", name: "Board case", shape: || Shape::Enclosure { board: 0, custom_w: 60.0, custom_d: 40.0, extra_h: 0.0, vents: true, wall_mount: false, gap: 0.25 }, default_size: [91.0, 132.0, 27.1] },
     ShapeInfo { category: "Moving parts", name: "Flexi snake", shape: || Shape::FlexiChain { segments: 12, width: 12.0, gap: 0.3, snake: true }, default_size: [172.8, 14.4, 8.4] },
     ShapeInfo { category: "Moving parts", name: "Flexi chain", shape: || Shape::FlexiChain { segments: 10, width: 10.0, gap: 0.3, snake: false }, default_size: [118.0, 10.0, 7.0] },
-    ShapeInfo { category: "Moving parts", name: "Flexi joint", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0 }, default_size: [38.4, 12.0, 8.4] },
+    ShapeInfo { category: "Joints", name: "Side-to-side", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 0 }, default_size: [38.4, 12.0, 8.4] },
+    ShapeInfo { category: "Joints", name: "Up & down", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 1 }, default_size: [38.4, 12.0, 12.0] },
+    ShapeInfo { category: "Joints", name: "Dragon joint", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 2 }, default_size: [65.6, 12.0, 12.0] },
+    ShapeInfo { category: "Joints", name: "Ball joint", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 3 }, default_size: [36.2, 12.0, 12.6] },
+    ShapeInfo { category: "Joints", name: "Snap ball", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 4 }, default_size: [27.7, 12.0, 13.8] },
     ShapeInfo { category: "Moving parts", name: "Spinning rings", shape: || Shape::Spinner { rings: 3, gap: 0.3 }, default_size: [50.0, 50.0, 8.0] },
     ShapeInfo { category: "Moving parts", name: "Gear pair", shape: || Shape::GearPair { teeth1: 12, teeth2: 24, module: 2.0, gap: 0.3 }, default_size: [86.0, 92.0, 12.0] },
     ShapeInfo { category: "Home & storage", name: "Gridfinity bin", shape: || Shape::GridBin { gx: 2, gy: 1, hu: 3, div_x: 2, div_y: 1, magnets: false, lip: true }, default_size: [83.5, 41.5, 25.4] },
@@ -236,7 +240,11 @@ impl Shape {
             Shape::Spinner { .. } => "Spinning rings",
             Shape::GearPair { .. } => "Gear pair",
             Shape::Enclosure { .. } => "Board case",
-            Shape::FlexiJoint { .. } => "Flexi joint",
+            Shape::FlexiJoint { kind: 1, .. } => "Up-and-down joint",
+            Shape::FlexiJoint { kind: 2, .. } => "Dragon joint",
+            Shape::FlexiJoint { kind: 3, .. } => "Ball joint",
+            Shape::FlexiJoint { kind: 4, .. } => "Snap ball joint",
+            Shape::FlexiJoint { .. } => "Side-to-side joint",
             Shape::Keychain { .. } => "Name keychain",
             Shape::CookieCutter { .. } => "Cookie cutter",
             Shape::QrCode { wifi: true, .. } => "Wi-Fi QR code",
@@ -268,8 +276,8 @@ impl Shape {
                 Some(b.max - b.min)
             }
             Shape::Sketch { pts, round, spin, height, .. } => Some(crate::sketch::natural_size(pts, round, *spin, *height)),
-            Shape::FlexiJoint { width, gap, swing } => {
-                let b = crate::parts::flexi_joint(*width, *gap, *swing).bounds();
+            Shape::FlexiJoint { width, gap, swing, kind } => {
+                let b = crate::parts::joint(*kind, *width, *gap, *swing).bounds();
                 Some(b.max - b.min)
             }
             Shape::Keychain { .. } => {
@@ -479,7 +487,7 @@ impl Shape {
                 wall_mount: *wall_mount,
                 gap: *gap,
             }),
-            Shape::FlexiJoint { width, gap, swing } => flexi_joint(*width, *gap, *swing),
+            Shape::FlexiJoint { width, gap, swing, kind } => joint(*kind, *width, *gap, *swing),
             Shape::Keychain { text, font, letter_h, border, thick, raise, ring, text_color } => {
                 let m = crate::makers::keychain(&crate::makers::KeychainOptions {
                     text,

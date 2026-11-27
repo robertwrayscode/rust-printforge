@@ -67,6 +67,7 @@ own settings in the Inspector:
 - **QR code plaques** (Wi-Fi login or any link) with an optional NFC tag pocket.
 - **Board cases** for Raspberry Pi 4/5, Arduino Uno, ESP32 or custom boards.
 - **Print-in-place moving parts:** flexi snake/chain, spinning rings, gear pairs.
+- **Joints for articulated toys:** side-to-side, up & down, dragon (both ways), print-in-place ball joint, and a snap-together ball joint.
 - **Round/bevel edges, split into pieces with alignment pins, add threads, text on any surface, version history.**
 - **Gridfinity bins & baseplates**, plus a **Fit test** print that tunes lids, caps, nuts and hinges to your printer.
 - **AI helper:** describe a design in plain English; your local model (llama.cpp/Ollama/LM Studio) or Claude builds it from RoboForge parts.

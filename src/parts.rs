@@ -1319,6 +1319,140 @@ pub fn flexi_joint(width: f64, gap: f64, swing: f64) -> Mesh {
     flexi_chain_swing(2, w, w * 1.6, w * 0.7, gap, false, swing)
 }
 
+/// Joint kinds for `joint()`.
+pub const JOINT_KINDS: [(&str, &str); 5] = [
+    ("Side-to-side", "Coned pin in a coned socket on an upright axis — the classic flexi animal joint. Wiggles left and right."),
+    ("Up-and-down", "The same pin joint turned on its side, so the next piece lifts and dips. Use it for jaws, necks and tails that curl up."),
+    ("Dragon (both ways)", "Two pin joints at right angles with a short link between: bends side to side and up and down, like articulated dragons that wrap round your arm."),
+    ("Ball joint", "A ball printed inside a cup: tilts every direction and twists. Flex it a few times to break it free."),
+    ("Snap ball (2 pieces)", "A ball on a peg and a split socket, printed apart and pushed together. Stiffer and poseable — good for action-figure shoulders and hips."),
+];
+
+/// Rotate a mesh 90° about the X axis through (y = 0, z = c).
+fn roll_x(mut m: Mesh, c: f64) -> Mesh {
+    for v in &mut m.verts {
+        *v = DVec3::new(v.x, -(v.z - c), v.y + c);
+    }
+    m
+}
+
+/// Print-in-place (and one snap-together) joints for articulated toys. `width` is the body
+/// thickness at the joint, `swing` degrees each way.
+pub fn joint(kind: u32, width: f64, gap: f64, swing: f64) -> Mesh {
+    let w = width.clamp(6.0, 40.0);
+    let g = gap.clamp(0.15, 0.8);
+    match kind {
+        1 => {
+            let m = flexi_chain_swing(2, w, w * 1.6, w, g, false, swing);
+            roll_x(m, w / 2.0)
+        }
+        2 => {
+            let a = flexi_chain_swing(2, w, w * 1.6, w, g, false, swing);
+            let rb = (0.3 * w + g + 1.6).max(w / 2.0);
+            let seg = (w * 1.6).max(rb * 2.0 + 2.0);
+            let b = moved(roll_x(a.clone(), w / 2.0), DVec3::new(seg + rb + 2.0, 0.0, 0.0));
+            union(vec![a, b])
+        }
+        3 => ball_joint(w, g, swing),
+        4 => snap_ball(w, g),
+        _ => flexi_joint(w, g, swing),
+    }
+}
+
+/// Revolved "ball with a 45° cone underneath" (and optionally on top) so it prints
+/// without supports. Centre at the origin.
+fn coned_ball(r: f64, top_cone: bool) -> Mesh {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let mut p = vec![(0.0, -r * 2f64.sqrt())];
+    let top = if top_cone { 45.0 } else { 90.0 };
+    let n = 24;
+    for k in 0..=n {
+        let a = (-45.0 + (top + 45.0) * k as f64 / n as f64).to_radians();
+        p.push((r * a.cos(), r * a.sin()));
+    }
+    if top_cone {
+        p.push((0.0, r * 2f64.sqrt()));
+    } else if p.last().unwrap().0 > 1e-9 {
+        p.push((0.0, r));
+    }
+    let _ = s;
+    // revolve wants the profile to start and end on the axis
+    p.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
+    let mut m = rev(&p, 48);
+    m.weld(1e-9);
+    m
+}
+
+fn ball_joint(w: f64, g: f64, swing: f64) -> Mesh {
+    let r = 0.3 * w;
+    let rc = r + g;
+    let c = (w / 2.0).max(rc * 2f64.sqrt() + 0.8);
+    let h = 2.0 * c;
+    let nr = (0.45 * r).max(1.2);
+    let swing = swing.clamp(10.0, 30.0).to_radians();
+    let len = 1.2 * w;
+    let xa = 0.6 * rc;
+    // cup piece
+    let alpha = swing + ((nr + g) / rc).asin();
+    let cone_len = w * 2.0;
+    let cone_r = cone_len * alpha.tan();
+    let mut opening = rev(&[(0.0, 0.0), (cone_r, cone_len), (0.0, cone_len)], 48);
+    // cone axis along +X from the ball centre
+    for v in &mut opening.verts {
+        *v = DVec3::new(v.z, v.y, -v.x);
+    }
+    orient_outward(&mut opening);
+    let opening = moved(opening, DVec3::new(0.0, 0.0, c));
+    let cup = cut(cube(DVec3::new(-len, -w / 2.0, 0.0), DVec3::new(xa, w / 2.0, h)), vec![moved(coned_ball(rc, true), DVec3::new(0.0, 0.0, c)), opening]);
+    // ball piece: ball, neck, block far enough out to swing every way
+    let half = (h / 2.0).max(w / 2.0) * 2f64.sqrt();
+    let xb = (xa + 2.0 * g + half * swing.sin()) / swing.cos();
+    let ball = moved(coned_ball(r, false), DVec3::new(0.0, 0.0, c));
+    let neck = cyl_x(0.0, c, nr, 0.0, xb + 1.0, 32);
+    let block = cube(DVec3::new(xb, -w / 2.0, 0.0), DVec3::new(xb + len, w / 2.0, h));
+    let mover = union(vec![ball, neck, block]);
+    union(vec![cup, mover])
+}
+
+fn snap_ball(w: f64, g: f64) -> Mesh {
+    let r = 0.32 * w;
+    // peg piece: base, stem, ball on top
+    let base_h = 3.0;
+    let stem_r = 0.5 * r;
+    let cz = base_h + r * 2f64.sqrt() + 1.5;
+    let peg = union(vec![
+        cyl_z(0.0, 0.0, w / 2.0, 0.0, base_h, 48),
+        cyl_z(0.0, 0.0, stem_r, base_h - 0.5, cz, 32),
+        moved(coned_ball(r, false), DVec3::new(0.0, 0.0, cz)),
+    ]);
+    // socket piece: a cup that grips the ball, split into four fingers
+    let rs = r + (g * 0.15).min(0.05);
+    let floor = 2.0;
+    let sc = floor + rs;
+    let top = sc + rs * 0.55;
+    let open = r * 0.82;
+    let outer = cyl_z(0.0, 0.0, rs + 1.8, 0.0, top, 48);
+    let mut cavity_p = vec![(0.0, -rs)];
+    for k in 0..=12 {
+        let a = (-90.0 + 90.0 * k as f64 / 12.0_f64).to_radians();
+        cavity_p.push((rs * a.cos(), rs * a.sin()));
+    }
+    // 45° roof up to the opening, then straight out the top
+    let roof_h = rs - open;
+    cavity_p.push((open, roof_h));
+    cavity_p.push((open, top - sc + 1.0));
+    cavity_p.push((0.0, top - sc + 1.0));
+    let cavity = moved(rev(&cavity_p, 48), DVec3::new(0.0, 0.0, sc));
+    let slit_w = 1.0;
+    let mut cuts = vec![cavity];
+    for k in 0..2 {
+        let (sx, sy) = if k == 0 { (rs + 3.0, slit_w / 2.0) } else { (slit_w / 2.0, rs + 3.0) };
+        cuts.push(cube(DVec3::new(-sx, -sy, sc), DVec3::new(sx, sy, top + 1.0)));
+    }
+    let socket = moved(cut(outer, cuts), DVec3::new(w + 4.0, 0.0, 0.0));
+    union(vec![peg, socket])
+}
+
 pub fn flexi_chain_swing(segments: u32, width: f64, seg_len: f64, height: f64, gap: f64, snake: bool, swing: f64) -> Mesh {
     let n = segments.clamp(2, 60) as usize;
     let w = width.clamp(6.0, 40.0);
@@ -1742,5 +1876,30 @@ mod qr_tests {
         let b = m.bounds();
         assert!((b.max.z - 4.0).abs() < 1e-6 && (b.max.x - b.min.x - 60.0).abs() < 1e-6);
         assert!(qr_plaque("x", 10.0, 1.0, 1, false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod joint_tests {
+    use super::*;
+    #[test]
+    fn joints_are_solid_and_separate() {
+        for k in 0..5u32 {
+            let m = joint(k, 12.0, 0.3, 25.0);
+            let mut e = std::collections::HashMap::new();
+            for t in &m.tris {
+                for i in 0..3 {
+                    *e.entry((t[i], t[(i + 1) % 3])).or_insert(0) += 1;
+                }
+            }
+            let bad = e.iter().filter(|(k, n)| !(**n == 1 && e.get(&(k.1, k.0)) == Some(&1))).count();
+            let (_, parts) = m.components();
+            let b = m.bounds();
+            eprintln!("JOINT {k}: parts {parts} bad {bad} size {:?} minz {}", b.size(), b.min.z);
+            assert_eq!(bad, 0);
+            let want = [2, 2, 3, 2, 2][k as usize];
+            assert_eq!(parts, want, "joint {k} pieces");
+            assert!(b.min.z > -1e-6);
+        }
     }
 }

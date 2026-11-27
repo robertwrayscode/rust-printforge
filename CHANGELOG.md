@@ -2,6 +2,18 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.7.0 — 2026-11-26
+- New **Joints** section in Shapes, with five joints for articulated toys:
+  - **Side-to-side:** coned pin in a coned socket, the classic flexi-animal joint.
+  - **Up & down:** the same joint on its side, for jaws, necks and tails that curl.
+  - **Dragon joint:** two pin joints at right angles with a short link, so it bends both
+    ways like the articulated dragons that wrap round your arm.
+  - **Ball joint:** a ball printed inside a cup; tilts every way and twists.
+  - **Snap ball:** ball-on-peg and a split socket, printed apart and pushed together, for
+    stiff poseable joints (action-figure shoulders and hips).
+  Each has size, swing and gap settings (the gap follows your Fit test).
+- New library parts now start at their real size.
+
 ## 1.6.1 — 2026-11-26
 - **Flexi joint** (Moving parts): the joint that articulated toy animals use, on its own: a
   coned pin in a coned socket, printed in place, with two stubs to build the body pieces

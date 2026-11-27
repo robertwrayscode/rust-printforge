@@ -580,7 +580,7 @@ impl App {
         if let Some(g) = crate::settings::fit_gap() {
             shape.apply_fit(g);
         }
-        let mut size = DVec3::from(info.default_size);
+        let mut size = shape.natural_size().unwrap_or(DVec3::from(info.default_size));
         if let Some(a) = shape.text_aspect() {
             size.x = size.y * a;
         }
@@ -3045,7 +3045,7 @@ impl App {
             }
             let cols = ((ui.available_width() / 74.0).floor() as usize).max(2);
             let tile = Vec2::new((ui.available_width() - (cols as f32 - 1.0) * 4.0) / cols as f32, 74.0);
-            for cat in ["Basic shapes", "Quick makers", "Moving parts", "Electronics", "Hardware", "Mounting", "Home & storage"] {
+            for cat in ["Basic shapes", "Quick makers", "Moving parts", "Joints", "Electronics", "Hardware", "Mounting", "Home & storage"] {
             if cat != "Basic shapes" {
                 ui.add_space(4.0);
                 ui.label(RichText::new(cat.to_uppercase()).size(10.5).strong().color(crate::theme::header()));
@@ -5298,11 +5298,26 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.checkbox(wall_mount, "Wall-mount tabs");
             ui.add(egui::Slider::new(gap, 0.05..=0.8).text("lid fit gap (mm)"));
         }
-        Shape::FlexiJoint { width, gap, swing } => {
-            ui.label(RichText::new("The joint articulated toys use: a coned pin in a coned socket, printed in place. Put one body piece on each stub (keep them out of the round joint), select all three and Group. Add more joints for a longer body.").small().weak());
+        Shape::FlexiJoint { width, gap, swing, kind } => {
+            let kinds = crate::parts::JOINT_KINDS;
+            let k = (*kind as usize).min(kinds.len() - 1);
+            egui::ComboBox::from_id_salt("joint_kind").selected_text(kinds[k].0).show_ui(ui, |ui| {
+                for (i, (n, _)) in kinds.iter().enumerate() {
+                    ui.selectable_value(kind, i as u32, *n);
+                }
+            });
+            ui.label(RichText::new(kinds[k].1).small().weak());
+            if *kind == 4 {
+                ui.label(RichText::new("Push the ball into the socket after printing. The size sets the ball.").small().weak());
+            } else {
+                ui.label(RichText::new("Put one body piece on each end block (keep them clear of the joint itself), select them all and Group. Chain more joints for a longer body.").small().weak());
+            }
             ui.add(egui::Slider::new(width, 6.0..=30.0).text("size (mm)"));
-            ui.add(egui::Slider::new(swing, 10.0..=40.0).text("swing each way (°)"));
-            ui.add(egui::Slider::new(gap, 0.15..=0.6).text("gap (mm)"));
+            if *kind != 4 {
+                let max = if *kind == 3 { 30.0 } else { 40.0 };
+                ui.add(egui::Slider::new(swing, 10.0..=max).text("swing each way (°)"));
+                ui.add(egui::Slider::new(gap, 0.15..=0.6).text("gap (mm)"));
+            }
         }
         Shape::FlexiChain { segments, width, gap, snake } => {
             ui.label(RichText::new("Prints in one piece and comes off the plate already moving. Flex it gently the first time.").small().weak());
