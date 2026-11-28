@@ -2,6 +2,20 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.10.0 — 2026-11-28
+- **Sculpt** tool (toolbar): shape any part's surface with a soft round brush.
+  - **Pull out** / **Push in** — raise or press in the area under the brush.
+  - **Smooth** — even out bumps; **Flatten** — level an area.
+  - **Drag** — grab a spot and pull it anywhere; the area around follows smoothly.
+  - Brush size (also [ and ] keys) and strength; **Mirror left ↔ right** for symmetrical
+    things like faces and animals. A ring shows the brush on the surface.
+  - Detail is added under the brush automatically so strokes stay smooth; each stroke is
+    one Ctrl+Z. The part becomes a mesh the first time you sculpt it (shape settings no
+    longer apply).
+- **Raise/Sink** tool: draw a rectangle, circle or your own outline on a flat face, set a
+  height in mm (negative sinks it in) and Apply. Crisp edges and exact sizes; the area is its
+  own part grouped with yours, so Ungroup to move or resize it later. Esc cancels.
+
 ## 1.9.0 — 2026-11-28
 - **Drag preview:** dragging a shape from the Shapes panel now shows a faint see-through copy
   of it on the plate, with its outline, exactly where it will land (on top of other parts

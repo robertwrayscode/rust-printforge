@@ -7,7 +7,7 @@ use crate::render::{Batch, Pass, Renderer, SharedRenderer};
 use crate::scene::{Document, Filament, Kind, MeshCache, Object, normalize_mesh};
 use crate::shapes::{FontChoice, LIBRARY, Shape};
 use eframe::egui::{self, Color32, Key, Pos2, Rect, RichText, Sense, Stroke, Vec2};
-use glam::{DMat4, DQuat, DVec3, Vec3};
+use glam::{DMat3, DMat4, DQuat, DVec2, DVec3, EulerRot, Vec3};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -84,6 +84,8 @@ pub enum Tool {
     PushPull,
     Decal,
     SurfaceText,
+    Sculpt,
+    Raise,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -130,6 +132,62 @@ struct ResizeDrag {
     origin: DVec3,
     dir: DVec3,
     s0: f64,
+}
+
+#[derive(Clone)]
+/// The object being sculpted, kept in its own frame between strokes.
+struct SculptTarget {
+    id: u64,
+    mesh: crate::mesh::Mesh,
+    /// the mesh we last put on the object (to notice if it was changed elsewhere)
+    arc: Arc<crate::mesh::Mesh>,
+    /// where the last dab went (object frame), during a stroke
+    last: Option<DVec3>,
+    drag: Option<SculptDrag>,
+}
+
+#[derive(Clone)]
+struct SculptDrag {
+    start_obj: Object,
+    start_mesh: crate::mesh::Mesh,
+    grab: DVec3,
+    grab_w: DVec3,
+    plane_n: DVec3,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RaiseShape {
+    Rect,
+    Circle,
+    Draw,
+}
+
+/// Raise / sink an area: a face plane, an outline on it, and a height.
+#[derive(Clone)]
+struct RaiseFace {
+    id: u64,
+    origin: DVec3,
+    n: DVec3,
+    u: DVec3,
+    v: DVec3,
+}
+
+struct RaiseState {
+    shape: RaiseShape,
+    face: Option<RaiseFace>,
+    /// outline in face coordinates (mm)
+    pts: Vec<DVec2>,
+    /// rectangle / circle being dragged out: start point
+    drag_from: Option<DVec2>,
+    done: bool,
+    /// + raises, - sinks
+    height: f64,
+}
+
+impl Default for RaiseState {
+    fn default() -> Self {
+        RaiseState { shape: RaiseShape::Rect, face: None, pts: vec![], drag_from: None, done: false, height: 2.0 }
+    }
 }
 
 #[derive(Clone)]
@@ -300,6 +358,11 @@ pub struct App {
     printable_report: Option<Vec<String>>,
     resize: Option<ResizeDrag>,
     pp: Option<PushPull>,
+    brush: crate::sculpt::Brush,
+    sculpt_t: Option<SculptTarget>,
+    /// brush ring to draw: (centre, surface normal) in world space
+    sculpt_ring: Option<(DVec3, DVec3)>,
+    raise: RaiseState,
     thumbs: Vec<egui::TextureHandle>,
     /// saved My Parts and their thumbnails (loaded on first use)
     my_parts: Option<Vec<(crate::my_parts::MyPart, egui::TextureHandle)>>,
@@ -413,6 +476,10 @@ impl App {
             printable_report: None,
             resize: None,
             pp: None,
+            brush: crate::sculpt::Brush::default(),
+            sculpt_t: None,
+            sculpt_ring: None,
+            raise: RaiseState::default(),
             thumbs: vec![],
             my_parts: None,
             ghost: None,
@@ -432,6 +499,436 @@ impl App {
             array_radius_angle: 360.0,
             show_help: false,
             screenshot: screenshot.map(|p| (p, 0)),
+        }
+    }
+
+    // ---------------------------------------------------------- sculpt
+
+    /// Get the object ready to sculpt (turning it into a mesh the first time).
+    fn sculpt_begin(&mut self, id: u64) -> bool {
+        let Some(o) = self.doc.find(id).cloned() else { return false };
+        if o.locked {
+            self.status = "That part is locked.".into();
+            return false;
+        }
+        if let (Some(t), Kind::Mesh(m)) = (&self.sculpt_t, &o.kind) {
+            if t.id == id && Arc::ptr_eq(&t.arc, m) {
+                return true;
+            }
+        }
+        let was_mesh = matches!(o.kind, Kind::Mesh(_));
+        let local = self.cache.colored_mesh(&o);
+        let mesh = crate::sculpt::prepare(&local);
+        let arc = Arc::new(mesh.clone());
+        if let Some(ob) = self.doc.find_mut(id) {
+            ob.kind = Kind::Mesh(arc.clone());
+            ob.paint = None;
+        }
+        self.sculpt_t = Some(SculptTarget { id, mesh, arc, last: None, drag: None });
+        if !was_mesh {
+            self.status = format!("{} is now a sculpted mesh — its shape settings no longer apply. Ctrl+Z (Cmd+Z) undoes a stroke.", o.name);
+        }
+        true
+    }
+
+    /// Put a sculpted mesh (in `base`'s frame) on the object, keeping it where it was.
+    /// Returns how far the object's frame moved (to shift stored points by).
+    fn sculpt_store(&mut self, base: &Object, local: crate::mesh::Mesh) -> DVec3 {
+        let b = local.bounds();
+        let off = DVec3::new(b.center().x, b.center().y, b.min.z);
+        let mut norm = local;
+        for v in &mut norm.verts {
+            *v -= off;
+        }
+        let v0 = norm.verts.first().copied().unwrap_or_default();
+        let w_old = base.transform().transform_point3(v0 + off);
+        let arc = Arc::new(norm.clone());
+        let mut o = base.clone();
+        o.size = b.size().max(DVec3::splat(0.01));
+        o.kind = Kind::Mesh(arc.clone());
+        o.paint = None;
+        let w_new = o.transform().transform_point3(v0);
+        o.pos += w_old - w_new;
+        if let Some(slot) = self.doc.find_mut(base.id) {
+            slot.kind = o.kind;
+            slot.size = o.size;
+            slot.pos = o.pos;
+            slot.paint = None;
+        }
+        if let Some(t) = &mut self.sculpt_t {
+            t.mesh = norm;
+            t.arc = arc;
+        }
+        self.touch();
+        off
+    }
+
+    /// Hit on the sculpt target only: (world point, object-frame point).
+    fn sculpt_hit(&mut self, rect: Rect, p: Pos2, id: u64) -> Option<(DVec3, DVec3)> {
+        let h = self.pick(rect, p)?;
+        if self.entries[h.entry].id != id {
+            return None;
+        }
+        let o = self.doc.find(id)?;
+        Some((h.point, o.transform().inverse().transform_point3(h.point)))
+    }
+
+    fn sculpt_interact(&mut self, ui: &egui::Ui, rect: Rect, hovered: bool, pressed: bool, down: bool, pos: Option<Pos2>) -> bool {
+        self.sculpt_ring = None;
+        let Some(p) = pos.filter(|p| rect.contains(*p)) else {
+            if !down {
+                if let Some(t) = &mut self.sculpt_t {
+                    t.last = None;
+                    t.drag = None;
+                }
+            }
+            return false;
+        };
+        // brush ring under the pointer
+        if let Some(h) = self.pick(rect, p) {
+            let e = &self.entries[h.entry];
+            let (n, _) = e.mesh.tri_normal_area(h.tri as usize);
+            self.sculpt_ring = Some((h.point, n));
+        }
+        let stroking = self.sculpt_t.as_ref().is_some_and(|t| t.last.is_some() || t.drag.is_some());
+        if pressed && hovered && !stroking {
+            let Some(h) = self.pick(rect, p) else { return false };
+            let id = self.entries[h.entry].id;
+            if !self.sculpt_begin(id) {
+                return false;
+            }
+            self.selection = vec![id];
+            let Some((w, local)) = self.sculpt_hit(rect, p, id) else { return false };
+            let brush = self.brush;
+            if brush.mode == crate::sculpt::Mode::Drag {
+                let o = self.doc.find(id).cloned().unwrap();
+                let t = self.sculpt_t.as_ref().unwrap();
+                let start_mesh = crate::sculpt::prepare_drag(&t.mesh, local, &brush);
+                let (_, rd) = self.camera.ray(rect, p);
+                if let Some(t) = &mut self.sculpt_t {
+                    t.drag = Some(SculptDrag { start_obj: o, start_mesh, grab: local, grab_w: w, plane_n: rd });
+                }
+            } else {
+                let mesh = crate::sculpt::dab(&self.sculpt_t.as_ref().unwrap().mesh, local, &brush);
+                let base = self.doc.find(id).cloned().unwrap();
+                let off = self.sculpt_store(&base, mesh);
+                if let Some(t) = &mut self.sculpt_t {
+                    t.last = Some(local - off);
+                }
+            }
+            ui.ctx().request_repaint();
+            return true;
+        }
+        if !down {
+            if let Some(t) = &mut self.sculpt_t {
+                t.last = None;
+                t.drag = None;
+            }
+            return false;
+        }
+        let Some(t) = &self.sculpt_t else { return false };
+        let id = t.id;
+        let brush = self.brush;
+        if let Some(d) = &t.drag {
+            // move the grabbed spot with the pointer, on a plane facing the camera
+            let (ro, rd) = self.camera.ray(rect, p);
+            let den = rd.dot(d.plane_n);
+            if den.abs() < 1e-9 {
+                return true;
+            }
+            let s = (d.grab_w - ro).dot(d.plane_n) / den;
+            let wp = ro + rd * s;
+            let delta_w = wp - d.grab_w;
+            let delta = d.start_obj.transform().inverse().transform_vector3(delta_w);
+            let mesh = crate::sculpt::drag(&d.start_mesh, d.grab, delta, &brush);
+            let base = d.start_obj.clone();
+            let keep = SculptDrag { start_obj: base.clone(), start_mesh: d.start_mesh.clone(), grab: d.grab, grab_w: d.grab_w, plane_n: d.plane_n };
+            self.sculpt_store(&base, mesh);
+            if let Some(t) = &mut self.sculpt_t {
+                t.drag = Some(keep);
+            }
+            ui.ctx().request_repaint();
+            return true;
+        }
+        let Some(last) = t.last else { return false };
+        let Some((_, local)) = self.sculpt_hit(rect, p, id) else { return true };
+        if local.distance(last) < (brush.radius * 0.25).max(0.3) {
+            return true;
+        }
+        // dabs evenly spaced from the last one to here
+        let steps = ((local.distance(last) / (brush.radius * 0.25).max(0.3)).ceil() as usize).clamp(1, 8);
+        let mut mesh = self.sculpt_t.as_ref().unwrap().mesh.clone();
+        for k in 1..=steps {
+            let q = last.lerp(local, k as f64 / steps as f64);
+            mesh = crate::sculpt::dab(&mesh, q, &brush);
+        }
+        let base = self.doc.find(id).cloned().unwrap();
+        let off = self.sculpt_store(&base, mesh);
+        if let Some(t) = &mut self.sculpt_t {
+            t.last = Some(local - off);
+        }
+        ui.ctx().request_repaint();
+        true
+    }
+
+    fn sculpt_panel(&mut self, ui: &mut egui::Ui) {
+        crate::theme::section(ui, "Sculpt");
+        ui.label("Click and drag on a part to shape its surface. Your part turns into a mesh the first time you sculpt it.");
+        for (m, name, tip) in crate::sculpt::Mode::ALL {
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.brush.mode, m, name);
+                ui.label(RichText::new(tip).small().weak());
+            });
+        }
+        ui.add(egui::Slider::new(&mut self.brush.radius, 1.0..=40.0).text("brush size (mm)"));
+        ui.add(egui::Slider::new(&mut self.brush.strength, 0.05..=1.0).text("strength"));
+        ui.checkbox(&mut self.brush.mirror, "Mirror left ↔ right").on_hover_text("Do the same on the other side of the part — for faces, animals, anything symmetrical");
+        ui.label(RichText::new("[ and ] change the brush size. Ctrl+Z (Cmd+Z) undoes a whole stroke.").small().weak());
+        if let Some(t) = &self.sculpt_t {
+            if self.selection.contains(&t.id) {
+                ui.label(RichText::new(format!("{} triangles", t.mesh.tris.len())).small().weak());
+                if t.mesh.tris.len() >= crate::sculpt::MAX_TRIS {
+                    ui.colored_label(Color32::from_rgb(240, 170, 60), "Detail limit reached — use a bigger brush for more shaping.");
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- raise / sink
+
+    fn raise_plane_point(&self, rect: Rect, p: Pos2) -> Option<DVec2> {
+        let f = self.raise.face.as_ref()?;
+        let (ro, rd) = self.camera.ray(rect, p);
+        let den = rd.dot(f.n);
+        if den.abs() < 1e-9 {
+            return None;
+        }
+        let s = (f.origin - ro).dot(f.n) / den;
+        let w = ro + rd * s - f.origin;
+        Some(DVec2::new(w.dot(f.u), w.dot(f.v)))
+    }
+
+    fn raise_world(&self, q: DVec2, h: f64) -> DVec3 {
+        let f = self.raise.face.as_ref().unwrap();
+        f.origin + f.u * q.x + f.v * q.y + f.n * h
+    }
+
+    fn raise_shape_pts(shape: RaiseShape, a: DVec2, b: DVec2) -> Vec<DVec2> {
+        match shape {
+            RaiseShape::Circle => {
+                let r = a.distance(b);
+                (0..48).map(|k| a + DVec2::from_angle(k as f64 * std::f64::consts::TAU / 48.0) * r).collect()
+            }
+            _ => vec![a, DVec2::new(b.x, a.y), b, DVec2::new(a.x, b.y)],
+        }
+    }
+
+    fn raise_interact(&mut self, ui: &egui::Ui, rect: Rect, hovered: bool, pressed: bool, down: bool, pos: Option<Pos2>) -> bool {
+        let Some(p) = pos.filter(|p| rect.contains(*p)) else { return self.raise.drag_from.is_some() };
+        if self.raise.done {
+            return false;
+        }
+        if pressed && hovered {
+            if self.raise.face.is_none() {
+                let Some(h) = self.pick(rect, p) else { return false };
+                let e = &self.entries[h.entry];
+                let id = e.id;
+                if self.doc.find(id).map(|o| o.locked).unwrap_or(true) {
+                    self.status = "That part is locked.".into();
+                    return false;
+                }
+                let (n, _) = e.mesh.tri_normal_area(h.tri as usize);
+                let up = if n.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+                let u = up.cross(n).normalize();
+                let v = n.cross(u);
+                self.raise.face = Some(RaiseFace { id, origin: h.point, n, u, v });
+                self.raise.pts.clear();
+                self.selection = vec![id];
+            }
+            let Some(q) = self.raise_plane_point(rect, p) else { return true };
+            match self.raise.shape {
+                RaiseShape::Draw => {
+                    let close = self.raise.pts.len() >= 3 && {
+                        let first = self.raise_world(self.raise.pts[0], 0.0);
+                        self.camera.project(rect, first).is_some_and(|s| s.distance(p) < 10.0)
+                    };
+                    if close {
+                        self.raise_finish();
+                    } else {
+                        self.raise.pts.push(q);
+                    }
+                }
+                _ => {
+                    self.raise.drag_from = Some(q);
+                    self.raise.pts = Self::raise_shape_pts(self.raise.shape, q, q);
+                }
+            }
+            ui.ctx().request_repaint();
+            return true;
+        }
+        if let Some(a) = self.raise.drag_from {
+            if let Some(q) = self.raise_plane_point(rect, p) {
+                self.raise.pts = Self::raise_shape_pts(self.raise.shape, a, q);
+            }
+            if !down {
+                self.raise.drag_from = None;
+                self.raise_finish();
+            }
+            ui.ctx().request_repaint();
+            return true;
+        }
+        self.raise.face.is_some()
+    }
+
+    fn raise_finish(&mut self) {
+        let pts = &self.raise.pts;
+        let (mut mn, mut mx) = (DVec2::splat(f64::MAX), DVec2::splat(f64::MIN));
+        for q in pts {
+            mn = mn.min(*q);
+            mx = mx.max(*q);
+        }
+        if pts.len() < 3 || (mx - mn).min_element() < 0.5 {
+            self.status = "That area is too small — drag out a bigger shape.".into();
+            self.raise.pts.clear();
+            if self.raise.shape != RaiseShape::Draw {
+                self.raise.face = None;
+            }
+            return;
+        }
+        self.raise.done = true;
+        self.status = "Set the height in the panel on the right (negative sinks it in), then Apply.".into();
+    }
+
+    fn raise_cancel(&mut self) {
+        let shape = self.raise.shape;
+        let h = self.raise.height;
+        self.raise = RaiseState { shape, height: h, ..Default::default() };
+    }
+
+    fn raise_apply(&mut self) {
+        let Some(f) = self.raise.face.clone() else { return };
+        let h = self.raise.height;
+        if h.abs() < 0.05 {
+            self.status = "Set a height first.".into();
+            return;
+        }
+        let Some(target) = self.doc.find(f.id).cloned() else { return };
+        let (mut mn, mut mx) = (DVec2::splat(f64::MAX), DVec2::splat(f64::MIN));
+        for q in &self.raise.pts {
+            mn = mn.min(*q);
+            mx = mx.max(*q);
+        }
+        let c = (mn + mx) / 2.0;
+        let pts: Vec<[f64; 2]> = self.raise.pts.iter().map(|q| [q.x - c.x, q.y - c.y]).collect();
+        if let Some(msg) = crate::sketch::problem(&pts, &vec![false; pts.len()], false) {
+            self.status = format!("That outline won't work: {msg}");
+            return;
+        }
+        // raised: from just under the surface up; sunk: from just above the surface down
+        let (base_off, height) = if h > 0.0 { (-0.1, h + 0.1) } else { (h, -h + 0.3) };
+        let shape = Shape::Sketch { pts: pts.clone(), round: vec![false; pts.len()], spin: false, height, sides: 64, wall: 0.0, floor: 0.0 };
+        let size = crate::sketch::natural_size(&pts, &vec![false; pts.len()], false, height);
+        let id = self.doc.alloc_id();
+        let mut o = Object::new(id, if h > 0.0 { "Raised area" } else { "Sunk area" }, Kind::Shape(shape), size);
+        o.hole = h < 0.0;
+        o.color = target.color;
+        let q = DQuat::from_mat3(&DMat3::from_cols(f.u, f.v, f.n));
+        let (z, y, x) = q.to_euler(EulerRot::ZYX);
+        o.rot = DVec3::new(x.to_degrees(), y.to_degrees(), z.to_degrees());
+        let base = f.origin + f.u * c.x + f.v * c.y + f.n * base_off;
+        let half = DVec3::new(0.0, 0.0, size.z * 0.5);
+        o.pos = base - half + o.rotation() * half;
+        self.doc.objects.push(o);
+        let name = target.name.clone();
+        let gid = self.doc.group(&[f.id, id], &mut self.cache);
+        if let Some(g) = gid.and_then(|g| self.doc.find_mut(g)) {
+            g.name = name;
+        }
+        if let Some(g) = gid {
+            self.selection = vec![g];
+        }
+        self.touch();
+        self.status = format!("{} {:.1} mm. Ungroup to move or resize the area later.", if h > 0.0 { "Raised" } else { "Sunk" }, h.abs());
+        self.raise_cancel();
+    }
+
+    fn raise_panel(&mut self, ui: &mut egui::Ui) {
+        crate::theme::section(ui, "Raise / sink an area");
+        ui.label("Pick a shape, then draw it on a flat face. Set the height and Apply — positive raises it, negative sinks it in. Crisp edges, exact millimetres.");
+        ui.horizontal(|ui| {
+            let busy = self.raise.face.is_some();
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.selectable_value(&mut self.raise.shape, RaiseShape::Rect, "▭ Rectangle");
+                ui.selectable_value(&mut self.raise.shape, RaiseShape::Circle, "◯ Circle");
+                ui.selectable_value(&mut self.raise.shape, RaiseShape::Draw, "✏ Draw");
+            });
+        });
+        let tip = match (self.raise.shape, self.raise.face.is_some(), self.raise.done) {
+            (_, _, true) => "Outline ready.",
+            (RaiseShape::Draw, true, false) => "Click to add corners; click the first corner again to finish.",
+            (RaiseShape::Draw, false, false) => "Click on a face to start the outline.",
+            (RaiseShape::Circle, _, _) => "Press on a face at the circle's centre and drag out.",
+            _ => "Press on a face and drag out the rectangle.",
+        };
+        ui.label(RichText::new(tip).small().weak());
+        ui.add(egui::Slider::new(&mut self.raise.height, -20.0..=20.0).step_by(0.1).text("height (mm)"));
+        ui.horizontal(|ui| {
+            if ui.add_enabled(self.raise.done, egui::Button::new(RichText::new("Apply").strong())).clicked() {
+                self.raise_apply();
+            }
+            if ui.add_enabled(self.raise.face.is_some(), egui::Button::new("Cancel")).clicked() {
+                self.raise_cancel();
+            }
+        });
+        ui.label(RichText::new("The area becomes its own part grouped with yours, so you can Ungroup to move, resize or reshape it later.").small().weak());
+    }
+
+    /// Outline preview for raise/sink and the sculpt brush ring.
+    fn draw_tool_overlays(&self, painter: &egui::Painter, rect: Rect) {
+        let blue = Color32::from_rgb(90, 165, 255);
+        if let Some((c, n)) = self.sculpt_ring {
+            if self.tool == Tool::Sculpt {
+                let up = if n.z.abs() < 0.9 { DVec3::Z } else { DVec3::Y };
+                let u = up.cross(n).normalize();
+                let v = n.cross(u);
+                let r = self.brush.radius;
+                let ring: Vec<Pos2> = (0..=48).filter_map(|k| self.camera.project(rect, c + (u * (k as f64 / 48.0 * std::f64::consts::TAU).cos() + v * (k as f64 / 48.0 * std::f64::consts::TAU).sin()) * r)).collect();
+                painter.add(egui::Shape::line(ring, Stroke::new(1.5, Color32::from_white_alpha(200))));
+                if let (Some(a), Some(b)) = (self.camera.project(rect, c), self.camera.project(rect, c + n * r * 0.5)) {
+                    painter.line_segment([a, b], Stroke::new(1.5, blue));
+                }
+            }
+        }
+        if self.tool == Tool::Raise && self.raise.face.is_some() && !self.raise.pts.is_empty() {
+            let h = if self.raise.done { self.raise.height } else { 0.0 };
+            let ring = |hh: f64| -> Vec<Pos2> {
+                let mut v: Vec<Pos2> = self.raise.pts.iter().filter_map(|q| self.camera.project(rect, self.raise_world(*q, hh))).collect();
+                if (self.raise.done || self.raise.shape != RaiseShape::Draw) && !v.is_empty() {
+                    v.push(v[0]);
+                }
+                v
+            };
+            painter.add(egui::Shape::line(ring(0.0), Stroke::new(2.0, blue)));
+            for q in &self.raise.pts {
+                if let Some(s) = self.camera.project(rect, self.raise_world(*q, 0.0)) {
+                    if self.raise.shape == RaiseShape::Draw {
+                        painter.circle_filled(s, 3.0, blue);
+                    }
+                }
+            }
+            if self.raise.done && h.abs() > 0.01 {
+                let col = if h > 0.0 { Color32::from_rgb(120, 220, 140) } else { Color32::from_rgb(240, 120, 110) };
+                painter.add(egui::Shape::line(ring(h), Stroke::new(1.5, col)));
+                let n = self.raise.pts.len();
+                let every = if self.raise.shape == RaiseShape::Circle { 6 } else { 1 };
+                for (k, q) in self.raise.pts.iter().enumerate() {
+                    if k % every == 0 || n < 8 {
+                        if let (Some(a), Some(b)) = (self.camera.project(rect, self.raise_world(*q, 0.0)), self.camera.project(rect, self.raise_world(*q, h))) {
+                            painter.line_segment([a, b], Stroke::new(1.0, col));
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -3240,6 +3737,8 @@ impl App {
             ui.selectable_value(&mut tool, Tool::LayFlat, "Lay flat");
             ui.selectable_value(&mut tool, Tool::SnapFaces, "Snap faces");
             ui.selectable_value(&mut tool, Tool::PushPull, "Push/Pull");
+            ui.selectable_value(&mut tool, Tool::Raise, "Raise/Sink").on_hover_text("Draw a rectangle, circle or outline on a face and raise it up or sink it in");
+            ui.selectable_value(&mut tool, Tool::Sculpt, "Sculpt").on_hover_text("Push, pull, smooth and drag areas of a surface with a soft brush");
             ui.selectable_value(&mut tool, Tool::Measure, "Measure");
             if ui.selectable_label(self.ai.open, "✨ AI helper").on_hover_text("Describe what you want and an AI builds it (your local model or Claude)").clicked() {
                 self.ai.open = !self.ai.open;
@@ -3255,6 +3754,8 @@ impl App {
                 self.measure.clear();
                 self.snap_from = None;
                 self.pp = None;
+                self.raise_cancel();
+                self.sculpt_ring = None;
                 self.geometry_dirty = true;
             }
             ui.separator();
@@ -3598,6 +4099,8 @@ impl App {
                 }
                 Tool::Decal => self.decal_panel(ui),
                 Tool::SurfaceText => self.stext_panel(ui),
+                Tool::Sculpt => self.sculpt_panel(ui),
+                Tool::Raise => self.raise_panel(ui),
                 Tool::PushPull => {
                     crate::theme::section(ui, "Push / Pull a face");
                     ui.label("Click a flat face, then drag it outward to extrude or inward to cut. Or type an exact distance below.");
@@ -4264,6 +4767,13 @@ impl App {
             }
         }
 
+        if self.tool == Tool::Sculpt && self.sculpt_interact(ui, rect, resp.hovered(), p_pressed, p_down, p_pos) {
+            pp_active = true;
+        }
+        if self.tool == Tool::Raise && self.raise_interact(ui, rect, resp.hovered(), p_pressed, p_down, p_pos) && (p_down || p_pressed) {
+            pp_active = true;
+        }
+
         // gizmo
         let mut gizmo_active = handle_active || pp_active;
         if !handle_active && !pp_active && self.tool == Tool::Select && self.gizmo_kind != GizmoKind::Off && !self.selection.is_empty() && !self.selected().iter().any(|o| o.locked) {
@@ -4534,7 +5044,7 @@ impl App {
                         self.snap_face_click(&h);
                     }
                 }
-                Tool::PushPull => {}
+                Tool::PushPull | Tool::Sculpt | Tool::Raise => {}
                 Tool::Decal => {
                     if let Some(h) = hit {
                         self.apply_decal(&h);
@@ -4746,6 +5256,7 @@ impl App {
         if go_home && !self.doc.objects.is_empty() {
             self.fit_view(false);
         }
+        self.draw_tool_overlays(&painter, rect);
         if self.doc.objects.is_empty() && self.ghost.is_none() {
             painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click or drag a shape from the left to begin", egui::FontId::proportional(20.0), crate::theme::hint());
         }
@@ -5157,7 +5668,17 @@ impl App {
                 self.tool = Tool::Select;
                 self.gizmo_kind = GizmoKind::Scale;
             }
-            if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
+            if self.tool == Tool::Sculpt {
+                if i.key_pressed(Key::OpenBracket) {
+                    self.brush.radius = (self.brush.radius / 1.2).max(1.0);
+                }
+                if i.key_pressed(Key::CloseBracket) {
+                    self.brush.radius = (self.brush.radius * 1.2).min(40.0);
+                }
+            }
+            if self.tool == Tool::Raise && self.raise.face.is_some() && i.consume_key(egui::Modifiers::NONE, Key::Escape) {
+                self.raise_cancel();
+            } else if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
                 if self.tool != Tool::Select {
                     self.tool = Tool::Select;
                 } else {

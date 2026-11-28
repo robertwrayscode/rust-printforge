@@ -73,6 +73,7 @@ own settings in the Inspector:
 - **AI helper:** describe a design in plain English; your local model (llama.cpp/Ollama/LM Studio) or Claude builds it from RoboForge parts.
 - **Filament types & My Filaments:** Bambu's H2C presets per filament (PLA, PETG, ABS, ASA, TPU…), hex colour codes, and a saved spool library.
 - **Print preview:** layer slider plus print time, grams per colour and colour-change estimates, and **Save time** suggestions that cut colour changes.
+- **Sculpt and Raise/Sink:** push, pull, smooth and drag areas of a surface with a soft brush (with mirroring), or raise and sink exact rectangles, circles and outlines on a face.
 - **My Parts:** save your own designs and reuse them from the Shapes panel, colours and settings included.
 - **Quick makers:** name keychains, cookie cutters (draw or trace a picture), and round lithophane lamp shades.
 - **Multiple plates:** tabs above the view (+ Plate); move parts between plates; Export to Bambu sends every plate in one project.

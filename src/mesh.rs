@@ -215,9 +215,14 @@ impl Mesh {
     /// Split every edge longer than `max_edge` (midpoint subdivision, crack-free:
     /// shared edges are split identically on both sides). `max_iters` bounds work.
     pub fn subdivide(&self, max_edge: f64, max_tris: usize) -> Mesh {
+        self.subdivide_where(max_edge, max_tris / 4 + 1, &|_, _| true)
+    }
+
+    /// Like `subdivide`, but only edges for which `want(a, b)` is true are split.
+    pub fn subdivide_where(&self, max_edge: f64, max_tris: usize, want: &dyn Fn(DVec3, DVec3) -> bool) -> Mesh {
         let mut m = self.clone();
         for _ in 0..12 {
-            if m.tris.len() * 4 > max_tris {
+            if m.tris.len() >= max_tris {
                 break;
             }
             let mut mids: HashMap<(u32, u32), u32> = HashMap::new();
@@ -231,7 +236,7 @@ impl Mesh {
                     if mids.contains_key(&key) {
                         continue;
                     }
-                    if m.verts[a as usize].distance_squared(m.verts[b as usize]) > max2 {
+                    if m.verts[a as usize].distance_squared(m.verts[b as usize]) > max2 && want(m.verts[a as usize], m.verts[b as usize]) {
                         let p = (m.verts[a as usize] + m.verts[b as usize]) * 0.5;
                         m.verts.push(p);
                         mids.insert(key, (m.verts.len() - 1) as u32);
