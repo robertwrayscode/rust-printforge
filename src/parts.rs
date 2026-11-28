@@ -1443,9 +1443,10 @@ fn snap_ball(w: f64, g: f64) -> Mesh {
     // socket piece: a cup that grips the ball, split into four springy fingers
     let rs = r + 0.5 * g.clamp(0.15, 0.6);
     let floor = 2.0;
-    let wall = 1.4;
+    // PLA cracks if bent much: thin, long fingers and only a small lip
+    let wall = 1.1;
     let sc = floor + rs;
-    let open = r * 0.9;
+    let open = r * 0.94;
     let roof_h = rs - open; // 45° roof from the equator in to the lip
     let lip_h = roof_h + 0.6;
     let top_h = lip_h + (rs + wall - 1.0 - open); // 45° lead-in flare up to the rim
@@ -1464,7 +1465,7 @@ fn snap_ball(w: f64, g: f64) -> Mesh {
     let cavity = moved(rev(&cavity_p, 48), DVec3::new(0.0, 0.0, sc));
     // slits run well below the ball's middle so the fingers can spread
     let slit_w = 1.2;
-    let slit_bottom = sc - 0.5 * rs;
+    let slit_bottom = floor + 0.6;
     let mut cuts = vec![cavity];
     for k in 0..2 {
         let (sx, sy) = if k == 0 { (rs + wall + 1.0, slit_w / 2.0) } else { (slit_w / 2.0, rs + wall + 1.0) };

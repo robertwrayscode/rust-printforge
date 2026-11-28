@@ -4916,7 +4916,8 @@ impl App {
                 };
             }
             if resp.drag_started_by(egui::PointerButton::Secondary) {
-                self.drag = if mods.shift { Drag::Pan } else { Drag::Orbit };
+                // right-drag slides the view; Shift+right-drag orbits
+                self.drag = if mods.shift { Drag::Orbit } else { Drag::Pan };
             }
             if resp.drag_started_by(egui::PointerButton::Middle) {
                 self.drag = Drag::Pan;
@@ -5008,6 +5009,14 @@ impl App {
             self.drag = Drag::None;
         }
 
+        // double-click a part to zoom in on it
+        if resp.double_clicked() && !gizmo_active && self.tool == Tool::Select {
+            if let Some(h) = pointer.and_then(|p| self.pick(rect, p)) {
+                let id = self.entries[h.entry].id;
+                self.selection = vec![id];
+                self.fit_view(true);
+            }
+        }
         // clicks
         if resp.clicked() && !gizmo_active {
             let hit = pointer.and_then(|p| self.pick(rect, p));
@@ -5061,11 +5070,28 @@ impl App {
         // zoom
         if resp.hovered() {
             let (scroll, zoom) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+            let mut k = 1.0;
             if scroll != 0.0 {
-                self.camera.dist = (self.camera.dist * (-(scroll as f64) * 0.0018).exp()).clamp(5.0, 5000.0);
+                k *= (-(scroll as f64) * 0.0018).exp();
             }
             if zoom != 1.0 {
-                self.camera.dist = (self.camera.dist / zoom as f64).clamp(5.0, 5000.0);
+                k /= zoom as f64;
+            }
+            if k != 1.0 {
+                let old = self.camera.dist;
+                let new = (old * k).clamp(5.0, 5000.0);
+                // zoom towards whatever is under the pointer, so it stays put on screen
+                let focus = pointer.and_then(|p| {
+                    self.pick(rect, p).map(|h| h.point).or_else(|| {
+                        let (o, d) = self.camera.ray(rect, p);
+                        (d.z.abs() > 1e-6 && -o.z / d.z > 0.0).then(|| o + d * (-o.z / d.z))
+                    })
+                });
+                if let Some(f) = focus {
+                    let k = new / old;
+                    self.camera.target = f + (self.camera.target - f) * k;
+                }
+                self.camera.dist = new;
             }
         }
 
@@ -5737,7 +5763,7 @@ impl App {
         if self.show_help {
             let mut open = true;
             egui::Window::new("Controls").open(&mut open).show(ctx, |ui| {
-                ui.label("Mouse: left-drag an object to move it on the plate · left-drag empty space or right-drag to orbit · middle-drag or Shift+right-drag to pan · scroll/pinch to zoom · Shift+drag on empty space to box-select · Alt+drag to drag out a copy.");
+                ui.label("Mouse: left-drag an object to move it on the plate · left-drag empty space or Shift+right-drag to orbit · right-drag or middle-drag to slide the view · scroll/pinch zooms towards the pointer · double-click a part (or press F) to zoom in on it · Shift+drag on empty space to box-select · Alt+drag to drag out a copy.");
                 ui.label("Keys (Ctrl on Windows, Cmd on Mac): Z undo · Shift+Z / Y redo · C/V copy/paste · D duplicate · G group · Shift+G ungroup · A select all · S save.");
                 ui.label("Plain keys: H make hole · S make solid · D drop to bed · F fit view · P paint · B fill · 1/2/3 move/rotate/scale gizmo · arrows nudge (Shift ×10, Ctrl/Cmd+↑↓ raise/lower) · Delete removes · Esc back to select.");
                 ui.label("Side handles: drag a white square on a selected part to stretch just that side. Push/Pull tool: click a flat face and drag it out or in.");

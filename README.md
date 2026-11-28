@@ -127,8 +127,8 @@ It also reports size, volume, estimated PLA weight, triangle count, and which fi
 
 Ctrl on Windows = Cmd on Mac.
 
-- **Mouse:** left-drag an object to move it · left-drag empty space or right-drag to
-  orbit · middle-drag or Shift+right-drag to pan · scroll or pinch to zoom ·
+- **Mouse:** left-drag an object to move it · left-drag empty space to
+  orbit (or Shift+right-drag) · right-drag or middle-drag to slide the view · scroll or pinch zooms towards the pointer · double-click a part to zoom in on it ·
   Shift+drag on empty space to box-select · Alt+drag to drag out a copy.
 - **Ctrl/Cmd:** Z undo · Shift+Z or Y redo · C / V copy, paste · D duplicate · G group ·
   Shift+G ungroup · A select all · S save.

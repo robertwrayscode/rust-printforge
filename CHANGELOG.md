@@ -2,6 +2,14 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.10.1 — 2026-11-28
+- **Getting around:** right-drag now slides the view (Shift+right-drag or left-drag on empty
+  space still orbits). Scrolling zooms towards whatever is under the pointer, and
+  double-clicking a part zooms in on it (F still does too).
+- **Snap ball:** the socket fingers cracked when pressing the ball in. They're now long,
+  thin and springy (split almost to the base) with a smaller lip, so PLA bends instead of
+  breaking.
+
 ## 1.10.0 — 2026-11-28
 - **Sculpt** tool (toolbar): shape any part's surface with a soft round brush.
   - **Pull out** / **Push in** — raise or press in the area under the brush.
