@@ -1425,29 +1425,35 @@ fn snap_ball(w: f64, g: f64) -> Mesh {
         cyl_z(0.0, 0.0, stem_r, base_h - 0.5, cz, 32),
         moved(coned_ball(r, false), DVec3::new(0.0, 0.0, cz)),
     ]);
-    // socket piece: a cup that grips the ball, split into four fingers
-    let rs = r + (g * 0.15).min(0.05);
+    // socket piece: a cup that grips the ball, split into four springy fingers
+    let rs = r + 0.5 * g.clamp(0.15, 0.6);
     let floor = 2.0;
+    let wall = 1.4;
     let sc = floor + rs;
-    let top = sc + rs * 0.55;
-    let open = r * 0.82;
-    let outer = cyl_z(0.0, 0.0, rs + 1.8, 0.0, top, 48);
+    let open = r * 0.9;
+    let roof_h = rs - open; // 45° roof from the equator in to the lip
+    let lip_h = roof_h + 0.6;
+    let top_h = lip_h + (rs + wall - 1.0 - open); // 45° lead-in flare up to the rim
+    let top = sc + top_h;
+    let outer = cyl_z(0.0, 0.0, rs + wall, 0.0, top, 48);
     let mut cavity_p = vec![(0.0, -rs)];
     for k in 0..=12 {
         let a = (-90.0 + 90.0 * k as f64 / 12.0_f64).to_radians();
         cavity_p.push((rs * a.cos(), rs * a.sin()));
     }
-    // 45° roof up to the opening, then straight out the top
-    let roof_h = rs - open;
     cavity_p.push((open, roof_h));
-    cavity_p.push((open, top - sc + 1.0));
-    cavity_p.push((0.0, top - sc + 1.0));
+    cavity_p.push((open, lip_h));
+    cavity_p.push((rs + wall - 1.0, top_h));
+    cavity_p.push((rs + wall - 1.0, top_h + 1.0));
+    cavity_p.push((0.0, top_h + 1.0));
     let cavity = moved(rev(&cavity_p, 48), DVec3::new(0.0, 0.0, sc));
-    let slit_w = 1.0;
+    // slits run well below the ball's middle so the fingers can spread
+    let slit_w = 1.2;
+    let slit_bottom = sc - 0.5 * rs;
     let mut cuts = vec![cavity];
     for k in 0..2 {
-        let (sx, sy) = if k == 0 { (rs + 3.0, slit_w / 2.0) } else { (slit_w / 2.0, rs + 3.0) };
-        cuts.push(cube(DVec3::new(-sx, -sy, sc), DVec3::new(sx, sy, top + 1.0)));
+        let (sx, sy) = if k == 0 { (rs + wall + 1.0, slit_w / 2.0) } else { (slit_w / 2.0, rs + wall + 1.0) };
+        cuts.push(cube(DVec3::new(-sx, -sy, slit_bottom), DVec3::new(sx, sy, top + 1.0)));
     }
     let socket = moved(cut(outer, cuts), DVec3::new(w + 4.0, 0.0, 0.0));
     union(vec![peg, socket])

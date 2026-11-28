@@ -2,6 +2,11 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.8.1 — 2026-11-28
+- **Snap ball:** the socket was too stiff and too tight for the ball to go in. The cup is now a
+  little roomier, the four fingers are split deeper so they spread, the lip is gentler and
+  the top has a lead-in so the ball finds its way in.
+
 ## 1.8.0 — 2026-11-26
 - **My Parts:** select anything you've made and click **★ Save to My Parts…** in the
   Inspector. It appears at the top of the Shapes panel with its own picture; click it to add
