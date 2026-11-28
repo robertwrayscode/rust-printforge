@@ -2,6 +2,11 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.10.2 — 2026-11-28
+- **See-through plate from below:** orbit under the plate and it turns see-through, and every
+  part's area that sits on the plate shows in green. A part with no green isn't touching
+  the plate (press D to drop it down).
+
 ## 1.10.1 — 2026-11-28
 - **Getting around:** right-drag now slides the view (Shift+right-drag or left-drag on empty
   space still orbits). Scrolling zooms towards whatever is under the pointer, and

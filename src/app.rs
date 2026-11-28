@@ -362,6 +362,8 @@ pub struct App {
     sculpt_t: Option<SculptTarget>,
     /// brush ring to draw: (centre, surface normal) in world space
     sculpt_ring: Option<(DVec3, DVec3)>,
+    /// camera is under the plate (plate drawn see-through)
+    bed_below: bool,
     raise: RaiseState,
     thumbs: Vec<egui::TextureHandle>,
     /// saved My Parts and their thumbnails (loaded on first use)
@@ -479,6 +481,7 @@ impl App {
             brush: crate::sculpt::Brush::default(),
             sculpt_t: None,
             sculpt_ring: None,
+            bed_below: false,
             raise: RaiseState::default(),
             thumbs: vec![],
             my_parts: None,
@@ -2568,13 +2571,28 @@ impl App {
                 }
             }
         }
-        // bed
+        // bed: see-through when looking from underneath, with what touches it in green
         let p = &self.doc.printer;
         let (hx, hy) = (330.0f32 / 2.0, 320.0f32 / 2.0);
         let z = -0.05;
         let bc = crate::theme::bed_color();
-        solid.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, -hy, z), Vec3::new(hx, hy, z), bc);
-        solid.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, hy, z), Vec3::new(-hx, hy, z), bc);
+        if self.bed_below {
+            let bt = [bc[0], bc[1], bc[2], 0.3];
+            holes.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, -hy, z), Vec3::new(hx, hy, z), bt);
+            holes.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, hy, z), Vec3::new(-hx, hy, z), bt);
+            let green = [0.25, 0.85, 0.4, 1.0];
+            for e in self.entries.iter().filter(|e| !e.hole) {
+                for t in 0..e.mesh.tris.len() {
+                    let [a, b, c] = e.mesh.tri_points(t);
+                    if a.z.max(b.z).max(c.z) < 0.05 && (b - a).cross(c - a).z < 0.0 {
+                        overlay.tri(a.as_vec3(), b.as_vec3(), c.as_vec3(), green);
+                    }
+                }
+            }
+        } else {
+            solid.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, -hy, z), Vec3::new(hx, hy, z), bc);
+            solid.tri(Vec3::new(-hx, -hy, z), Vec3::new(hx, hy, z), Vec3::new(-hx, hy, z), bc);
+        }
         let gc = crate::theme::grid_color();
         let ga = crate::theme::grid_axis_color();
         let mut x = -150.0f32;
@@ -5096,6 +5114,11 @@ impl App {
         }
 
         self.refresh_world();
+        let below = self.camera.eye().z < 0.0;
+        if below != self.bed_below {
+            self.bed_below = below;
+            self.rebuild_batches();
+        }
 
         {
             let mut r = self.renderer.lock().unwrap();
