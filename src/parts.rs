@@ -5,7 +5,7 @@
 use crate::csg::combine;
 use crate::mesh::Mesh;
 use crate::shapes::{extrude, orient_outward, revolve, rounded_box};
-use glam::{DVec2, DVec3};
+use glam::{DQuat, DVec2, DVec3};
 use std::f64::consts::{PI, TAU};
 
 fn moved(mut m: Mesh, d: DVec3) -> Mesh {
@@ -1928,120 +1928,105 @@ mod joint_tests {
 
 // ------------------------------------------------------------------ head
 
-fn smin(a: f64, b: f64, k: f64) -> f64 {
-    let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
-    b + (a - b) * h - k * h * (1.0 - h)
-}
-
-fn smax(a: f64, b: f64, k: f64) -> f64 {
-    -smin(-a, -b, k)
-}
-
-fn ellipsoid(p: DVec3, c: DVec3, r: DVec3) -> f64 {
-    let q = (p - c) / r;
-    let k0 = q.length();
-    let k1 = ((p - c) / (r * r)).length();
-    if k1 < 1e-12 {
-        return -r.min_element();
+/// The head scan (see assets/head_scan_LICENSE.txt), in RoboForge axes: face towards -Y.
+fn head_scan() -> Mesh {
+    let b: &[u8] = include_bytes!("../assets/head_scan.bin");
+    let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]) as usize;
+    let (nv, nt) = (u32_at(0), u32_at(4));
+    let mut m = Mesh::new();
+    let mut o = 8;
+    for _ in 0..nv {
+        let f = |k: usize| f32::from_le_bytes([b[o + k], b[o + k + 1], b[o + k + 2], b[o + k + 3]]) as f64;
+        m.add_vert(DVec3::new(f(0), f(4), f(8)));
+        o += 12;
     }
-    k0 * (k0 - 1.0) / k1
-}
-
-fn capsule(p: DVec3, a: DVec3, b: DVec3, r: f64) -> f64 {
-    let pa = p - a;
-    let ba = b - a;
-    let h = (pa.dot(ba) / ba.dot(ba)).clamp(0.0, 1.0);
-    (pa - ba * h).length() - r
-}
-
-/// A friendly, generic human head on a short neck (face looks towards -Y), as a distance
-/// field in mm. About 46 × 44 × 62 mm before sizing.
-fn head_sdf(p: DVec3) -> f64 {
-    let v = |x, y, z| DVec3::new(x, y, z);
-    let mut d = ellipsoid(p, v(0.0, 2.5, 9.0), v(14.5, 17.5, 15.5)); // cranium
-    d = smin(d, ellipsoid(p, v(0.0, -4.0, -4.0), v(11.5, 12.0, 13.5)), 6.0); // face and jaw
-    d = smin(d, ellipsoid(p, v(0.0, -9.5, -14.5), v(5.5, 4.5, 4.0)), 4.0); // chin
-    d = smin(d, ellipsoid(p, v(-8.0, -8.0, -3.0), v(4.0, 4.0, 4.5)), 4.0); // cheeks
-    d = smin(d, ellipsoid(p, v(8.0, -8.0, -3.0), v(4.0, 4.0, 4.5)), 4.0);
-    d = smin(d, ellipsoid(p, v(0.0, -12.0, 6.5), v(10.0, 3.5, 2.5)), 3.0); // brow
-    // nose: bridge and tip
-    d = smin(d, capsule(p, v(0.0, -13.5, 4.0), v(0.0, -16.5, -2.5), 1.6), 2.0);
-    d = smin(d, ellipsoid(p, v(0.0, -16.0, -3.2), v(3.2, 2.6, 2.4)), 1.5);
-    // lips
-    d = smin(d, ellipsoid(p, v(0.0, -13.2, -8.3), v(4.6, 2.0, 1.3)), 1.5);
-    d = smin(d, ellipsoid(p, v(0.0, -12.8, -10.4), v(4.0, 2.0, 1.3)), 1.5);
-    // ears
-    for sx in [-1.0, 1.0] {
-        let ear = ellipsoid(p, v(14.5 * sx, 3.0, 0.5), v(2.6, 5.0, 7.5));
-        let hollow = ellipsoid(p, v(15.6 * sx, 2.6, 0.5), v(1.4, 3.2, 5.2));
-        d = smin(d, smax(ear, -hollow, 0.8), 1.5);
+    for _ in 0..nt {
+        let i = |k: usize| u16::from_le_bytes([b[o + k], b[o + k + 1]]) as u32;
+        m.add_tri(i(0), i(2), i(4));
+        o += 6;
     }
-    // eye sockets with simple eyeballs
-    for sx in [-1.0, 1.0] {
-        d = smax(d, -ellipsoid(p, v(5.0 * sx, -14.5, 2.5), v(3.6, 3.0, 2.6)), 1.5);
-        d = smin(d, ellipsoid(p, v(5.0 * sx, -12.9, 2.5), v(2.6, 2.2, 2.2)), 0.6);
-    }
-    // neck, cut flat underneath so it stands on the plate
-    d = smin(d, capsule(p, v(0.0, 2.5, -14.0), v(0.0, 3.5, -40.0), 7.8), 5.0);
-    smax(d, -(p.z + 31.0), 2.5)
+    m
 }
 
-/// The generic head (built once, then reused).
+/// One step of Loop subdivision (smooths and quadruples a closed mesh).
+fn loop_subdivide(m: &Mesh) -> Mesh {
+    use std::collections::HashMap;
+    let mut opp: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    let mut nb: Vec<Vec<u32>> = vec![vec![]; m.verts.len()];
+    for t in &m.tris {
+        for k in 0..3 {
+            let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+            opp.entry((a.min(b), a.max(b))).or_default().push(c);
+            if !nb[a as usize].contains(&b) {
+                nb[a as usize].push(b);
+            }
+            if !nb[b as usize].contains(&a) {
+                nb[b as usize].push(a);
+            }
+        }
+    }
+    let mut out = Mesh::new();
+    for (i, v) in m.verts.iter().enumerate() {
+        let n = nb[i].len();
+        if n < 3 {
+            out.add_vert(*v);
+            continue;
+        }
+        let beta = if n == 3 { 3.0 / 16.0 } else { 3.0 / (8.0 * n as f64) };
+        let sum: DVec3 = nb[i].iter().map(|j| m.verts[*j as usize]).sum();
+        out.add_vert(*v * (1.0 - n as f64 * beta) + sum * beta);
+    }
+    let mut mid: HashMap<(u32, u32), u32> = HashMap::new();
+    for (&(a, b), cs) in &opp {
+        let (va, vb) = (m.verts[a as usize], m.verts[b as usize]);
+        let p = if cs.len() == 2 {
+            (va + vb) * 0.375 + (m.verts[cs[0] as usize] + m.verts[cs[1] as usize]) * 0.125
+        } else {
+            (va + vb) * 0.5
+        };
+        mid.insert((a, b), out.add_vert(p));
+    }
+    let e = |a: u32, b: u32| mid[&(a.min(b), a.max(b))];
+    for (ti, t) in m.tris.iter().enumerate() {
+        let (a, b, c) = (t[0], t[1], t[2]);
+        let (ab, bc, ca) = (e(a, b), e(b, c), e(c, a));
+        let col = m.colors.get(ti).copied();
+        for tri in [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]] {
+            out.add_tri(tri[0], tri[1], tri[2]);
+            if let Some(col) = col {
+                if let Some(last) = out.colors.last_mut() {
+                    *last = col;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The head (built once, then reused): a real head scan, smoothed, with the neck cut off
+/// so it stands on a flat base under the jaw. About 55 mm tall.
 pub fn human_head() -> Mesh {
     static HEAD: std::sync::OnceLock<Mesh> = std::sync::OnceLock::new();
     HEAD.get_or_init(build_head).clone()
 }
 
-/// Mesh of the generic head: a sphere grid pushed out to the head's surface.
 fn build_head() -> Mesh {
-    let center = DVec3::new(0.0, 0.0, -2.0);
-    let (nu, nv) = (200usize, 200usize);
-    let surface = |dir: DVec3| -> f64 {
-        // outermost crossing along the ray
-        let step = 0.4;
-        let mut t = 70.0;
-        while t > 0.0 && head_sdf(center + dir * t) > 0.0 {
-            t -= step;
-        }
-        let (mut lo, mut hi) = (t.max(0.0), t + step);
-        for _ in 0..30 {
-            let mid = (lo + hi) / 2.0;
-            if head_sdf(center + dir * mid) < 0.0 {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        (lo + hi) / 2.0
-    };
-    let mut m = Mesh::new();
-    let top = m.add_vert(center + DVec3::Z * surface(DVec3::Z));
-    let bottom = m.add_vert(center - DVec3::Z * surface(-DVec3::Z));
-    let mut rows: Vec<Vec<u32>> = vec![];
-    for j in 1..nv {
-        let phi = std::f64::consts::PI * j as f64 / nv as f64;
-        let row = (0..nu)
-            .map(|i| {
-                let th = std::f64::consts::TAU * i as f64 / nu as f64;
-                let dir = DVec3::new(phi.sin() * th.cos(), phi.sin() * th.sin(), phi.cos());
-                m.add_vert(center + dir * surface(dir))
-            })
-            .collect();
-        rows.push(row);
+    let mut m = loop_subdivide(&head_scan());
+    // a plane just under the jaw at the front and the base of the skull at the back
+    let p0 = DVec3::new(0.0, -2.1, -0.7);
+    let n = DVec3::new(0.0, -0.35, 4.0).normalize();
+    let q = DQuat::from_rotation_arc(n, DVec3::Z);
+    for v in &mut m.verts {
+        *v = q * (*v - p0);
     }
-    for i in 0..nu {
-        let k = (i + 1) % nu;
-        m.add_tri(top, rows[0][i], rows[0][k]);
-        let last = &rows[rows.len() - 1];
-        m.add_tri(bottom, last[k], last[i]);
+    let below = cube(DVec3::new(-20.0, -20.0, -20.0), DVec3::new(20.0, 20.0, 0.0));
+    let mut m = cut(m, vec![below]);
+    let b = m.bounds();
+    let s = 55.0 / (b.max.z - b.min.z);
+    let off = DVec3::new(b.center().x, b.center().y, b.min.z);
+    for v in &mut m.verts {
+        *v = (*v - off) * s;
     }
-    for j in 0..rows.len() - 1 {
-        for i in 0..nu {
-            let k = (i + 1) % nu;
-            m.add_quad(rows[j][i], rows[j + 1][i], rows[j + 1][k], rows[j][k]);
-        }
-    }
-    orient_outward(&mut m);
     m
 }
 

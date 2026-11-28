@@ -6228,7 +6228,8 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.label(RichText::new(format!("Ratio {}:{} = {:.2}", teeth1, teeth2, *teeth2 as f64 / *teeth1 as f64)).small());
         }
         Shape::Head => {
-            ui.label(RichText::new("A plain, friendly head to start from. Resize it, then use the Sculpt tool (Mirror on) to shape the face, or Raise/Sink for details.").small().weak());
+            ui.label(RichText::new("A realistic head with a flat base under the jaw. Resize it, then use the Sculpt tool (Mirror on) to change the face, or Raise/Sink for details.").small().weak());
+            ui.label(RichText::new("Head scan by Lee Perry-Smith (Infinite-Realities), CC BY 3.0.").small().weak());
         }
         Shape::FitTest => {
             ui.label(RichText::new("1. Print this (any PLA). 2. Push the peg into each hole. 3. Click the number of the TIGHTEST hole the peg still slides into by hand:").small());

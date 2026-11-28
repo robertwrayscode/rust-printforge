@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.11.1 — 2026-11-28
+- **Head** is now realistic: made from a real head scan, smoothed, with the neck cut off and
+  a flat base under the jaw so it stands and prints without supports (about 55 mm tall).
+  Head scan by Lee Perry-Smith (Infinite-Realities), CC BY 3.0 — see
+  assets/head_scan_LICENSE.txt.
+
 ## 1.11.0 — 2026-11-28
 - **Head** in Basic shapes: a smooth, friendly human head on a neck with a flat base
   (about 55 mm tall). Resize it, then shape it with the Sculpt tool (turn on Mirror) or add

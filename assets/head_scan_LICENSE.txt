@@ -1,0 +1,7 @@
+The Head shape is made from "Infinite, 3D Head Scan" by Lee Perry-Smith (Infinite-Realities,
+http://www.ir-ltd.net/), licensed under Creative Commons Attribution 3.0 Unported
+(https://creativecommons.org/licenses/by/3.0/). Based on a work at www.triplegangers.com.
+Taken from the three.js examples (examples/models/gltf/LeePerrySmith).
+
+Changes: converted to RoboForge's axes, smoothed (one level of Loop subdivision), the neck
+and shoulders cut off with a flat base, and scaled.

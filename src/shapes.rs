@@ -69,7 +69,7 @@ pub enum Shape {
     QrCode { wifi: bool, text: String, ssid: String, password: String, open: bool, raise: f64, nfc: bool, dark: u32 },
     /// Single print-in-place toy joint.
     FlexiJoint { width: f64, gap: f64, swing: f64, #[serde(default)] kind: u32 },
-    /// A generic human head on a neck, to sculpt from.
+    /// A realistic human head (no neck) with a flat base, to sculpt from.
     Head,
     /// Name keychain. ring: 0 none, 1 left, 2 top.
     Keychain { text: String, font: FontChoice, letter_h: f64, border: f64, thick: f64, raise: f64, ring: u32, text_color: u32 },
@@ -153,7 +153,7 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Mounting", name: "Keyhole plate", shape: || Shape::KeyholePlate, default_size: [60.0, 30.0, 4.0] },
     ShapeInfo { category: "Mounting", name: "Cable comb", shape: || Shape::CableComb { slots: 5, cable: 5.0 }, default_size: [45.0, 10.0, 12.0] },
     ShapeInfo { category: "Mounting", name: "Desk grommet", shape: || Shape::Grommet { hole: 50.0 }, default_size: [60.0, 60.0, 20.0] },
-    ShapeInfo { category: "Basic shapes", name: "Head", shape: || Shape::Head, default_size: [33.3, 38.7, 55.5] },
+    ShapeInfo { category: "Basic shapes", name: "Head", shape: || Shape::Head, default_size: [44.4, 57.0, 55.0] },
     ShapeInfo { category: "Quick makers", name: "Name keychain", shape: || Shape::Keychain { text: "Robert".into(), font: FontChoice::Sans, letter_h: 12.0, border: 3.0, thick: 3.0, raise: 1.5, ring: 1, text_color: 1 }, default_size: [70.0, 22.0, 4.5] },
     ShapeInfo { category: "Quick makers", name: "Cookie cutter", shape: || Shape::CookieCutter { pts: crate::makers::default_cutter_outline(), round: vec![], wall: 1.0, height: 14.0, flange: 3.0 }, default_size: [72.0, 64.0, 14.0] },
     ShapeInfo { category: "Electronics", name: "Wi-Fi QR code", shape: || Shape::QrCode { wifi: true, text: String::new(), ssid: "MyNetwork".into(), password: "password".into(), open: false, raise: 1.0, nfc: false, dark: 1 }, default_size: [60.0, 60.0, 4.0] },

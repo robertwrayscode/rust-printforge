@@ -158,3 +158,7 @@ against a newer Bambu Studio checkout.
 ## License
 MIT. Uses egui/eframe, boolmesh, transform-gizmo, and the Ubuntu and Hack fonts
 (their own licences apply).
+
+## Credits
+
+The Head shape is made from "Infinite, 3D Head Scan" by Lee Perry-Smith (Infinite-Realities, http://www.ir-ltd.net/), licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/); changes: smoothed, neck removed, flat base added, scaled. See `assets/head_scan_LICENSE.txt`.
