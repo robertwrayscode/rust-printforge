@@ -1384,16 +1384,22 @@ fn coned_ball(r: f64, top_cone: bool) -> Mesh {
 }
 
 fn ball_joint(w: f64, g: f64, swing: f64) -> Mesh {
-    let r = 0.3 * w;
+    let r = 0.34 * w;
     let rc = r + g;
-    let c = (w / 2.0).max(rc * 2f64.sqrt() + 0.8);
+    // the ball's underside prints over the cup floor: give it extra room there so it
+    // can't sag onto it and stick
+    let drop = 0.45;
+    let c = (w / 2.0).max(rc * 2f64.sqrt() + drop + 0.8);
     let h = 2.0 * c;
-    let nr = (0.45 * r).max(1.2);
+    // a thick neck: it's printed lying down, so it needs the bulk
+    let nr = (0.55 * r).max(1.6);
     let swing = swing.clamp(10.0, 30.0).to_radians();
     let len = 1.2 * w;
     let xa = 0.6 * rc;
     // cup piece
-    let alpha = swing + ((nr + g) / rc).asin();
+    // never open the cup so wide the ball could pull out (big gaps trade away some swing)
+    let alpha = (swing + ((nr + g) / rc).asin()).min(((r - 0.3) / rc).asin());
+    let swing = alpha - ((nr + g) / rc).asin();
     let cone_len = w * 2.0;
     let cone_r = cone_len * alpha.tan();
     let mut opening = rev(&[(0.0, 0.0), (cone_r, cone_len), (0.0, cone_len)], 48);
@@ -1403,14 +1409,23 @@ fn ball_joint(w: f64, g: f64, swing: f64) -> Mesh {
     }
     orient_outward(&mut opening);
     let opening = moved(opening, DVec3::new(0.0, 0.0, c));
-    let cup = cut(cube(DVec3::new(-len, -w / 2.0, 0.0), DVec3::new(xa, w / 2.0, h)), vec![moved(coned_ball(rc, true), DVec3::new(0.0, 0.0, c)), opening]);
+    let cavity = union(vec![moved(coned_ball(rc, true), DVec3::new(0.0, 0.0, c)), moved(coned_ball(rc, true), DVec3::new(0.0, 0.0, c - drop))]);
+    let cup = cut(cube(DVec3::new(-len, -w / 2.0, 0.0), DVec3::new(xa, w / 2.0, h)), vec![cavity, opening]);
     // ball piece: ball, neck, block far enough out to swing every way
     let half = (h / 2.0).max(w / 2.0) * 2f64.sqrt();
     let xb = (xa + 2.0 * g + half * swing.sin()) / swing.cos();
     let ball = moved(coned_ball(r, false), DVec3::new(0.0, 0.0, c));
     let neck = cyl_x(0.0, c, nr, 0.0, xb + 1.0, 32);
+    // flare where the neck meets the block so it doesn't snap at the corner
+    let fl = 2.0f64.min(xb - xa - 1.0).max(0.0);
+    let mut flare = rev(&[(0.0, 0.0), (nr, 0.0), (nr + fl * 0.6, fl), (0.0, fl)], 32);
+    for v in &mut flare.verts {
+        *v = DVec3::new(v.z, v.y, -v.x);
+    }
+    orient_outward(&mut flare);
+    let flare = moved(flare, DVec3::new(xb - fl + 0.01, 0.0, c));
     let block = cube(DVec3::new(xb, -w / 2.0, 0.0), DVec3::new(xb + len, w / 2.0, h));
-    let mover = union(vec![ball, neck, block]);
+    let mover = union(vec![ball, neck, flare, block]);
     union(vec![cup, mover])
 }
 

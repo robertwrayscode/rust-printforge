@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.8.2 — 2026-11-28
+- **Ball joint:** the neck snapped while freeing a stuck ball. The ball is bigger, the neck is
+  about 40% thicker with a flare where it meets the block, and the cup has extra room under
+  the ball so its underside can't sag onto the floor and stick. The cup never opens wide
+  enough for the ball to pull out, even with big gaps.
+
 ## 1.8.1 — 2026-11-28
 - **Snap ball:** the socket was too stiff and too tight for the ball to go in. The cup is now a
   little roomier, the four fingers are split deeper so they spread, the lip is gentler and

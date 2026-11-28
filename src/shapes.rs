@@ -161,7 +161,7 @@ pub const LIBRARY: &[ShapeInfo] = &[
     ShapeInfo { category: "Joints", name: "Side-to-side", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 0 }, default_size: [38.4, 12.0, 8.4] },
     ShapeInfo { category: "Joints", name: "Up & down", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 1 }, default_size: [38.4, 12.0, 12.0] },
     ShapeInfo { category: "Joints", name: "Dragon joint", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 2 }, default_size: [65.6, 12.0, 12.0] },
-    ShapeInfo { category: "Joints", name: "Ball joint", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 3 }, default_size: [36.2, 12.0, 12.6] },
+    ShapeInfo { category: "Joints", name: "Ball joint", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 3 }, default_size: [37.3, 12.0, 14.9] },
     ShapeInfo { category: "Joints", name: "Snap ball", shape: || Shape::FlexiJoint { width: 12.0, gap: 0.3, swing: 25.0, kind: 4 }, default_size: [27.7, 12.0, 13.8] },
     ShapeInfo { category: "Moving parts", name: "Spinning rings", shape: || Shape::Spinner { rings: 3, gap: 0.3 }, default_size: [50.0, 50.0, 8.0] },
     ShapeInfo { category: "Moving parts", name: "Gear pair", shape: || Shape::GearPair { teeth1: 12, teeth2: 24, module: 2.0, gap: 0.3 }, default_size: [86.0, 92.0, 12.0] },
