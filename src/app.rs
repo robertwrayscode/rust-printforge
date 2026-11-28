@@ -6227,6 +6227,9 @@ fn shape_params(ui: &mut egui::Ui, s: &mut Shape) {
             ui.add(egui::Slider::new(gap, 0.1..=0.8).text("post gap (mm)"));
             ui.label(RichText::new(format!("Ratio {}:{} = {:.2}", teeth1, teeth2, *teeth2 as f64 / *teeth1 as f64)).small());
         }
+        Shape::Head => {
+            ui.label(RichText::new("A plain, friendly head to start from. Resize it, then use the Sculpt tool (Mirror on) to shape the face, or Raise/Sink for details.").small().weak());
+        }
         Shape::FitTest => {
             ui.label(RichText::new("1. Print this (any PLA). 2. Push the peg into each hole. 3. Click the number of the TIGHTEST hole the peg still slides into by hand:").small());
             ui.horizontal_wrapped(|ui| {

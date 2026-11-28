@@ -1925,3 +1925,146 @@ mod joint_tests {
         }
     }
 }
+
+// ------------------------------------------------------------------ head
+
+fn smin(a: f64, b: f64, k: f64) -> f64 {
+    let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
+    b + (a - b) * h - k * h * (1.0 - h)
+}
+
+fn smax(a: f64, b: f64, k: f64) -> f64 {
+    -smin(-a, -b, k)
+}
+
+fn ellipsoid(p: DVec3, c: DVec3, r: DVec3) -> f64 {
+    let q = (p - c) / r;
+    let k0 = q.length();
+    let k1 = ((p - c) / (r * r)).length();
+    if k1 < 1e-12 {
+        return -r.min_element();
+    }
+    k0 * (k0 - 1.0) / k1
+}
+
+fn capsule(p: DVec3, a: DVec3, b: DVec3, r: f64) -> f64 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = (pa.dot(ba) / ba.dot(ba)).clamp(0.0, 1.0);
+    (pa - ba * h).length() - r
+}
+
+/// A friendly, generic human head on a short neck (face looks towards -Y), as a distance
+/// field in mm. About 46 × 44 × 62 mm before sizing.
+fn head_sdf(p: DVec3) -> f64 {
+    let v = |x, y, z| DVec3::new(x, y, z);
+    let mut d = ellipsoid(p, v(0.0, 2.5, 9.0), v(14.5, 17.5, 15.5)); // cranium
+    d = smin(d, ellipsoid(p, v(0.0, -4.0, -4.0), v(11.5, 12.0, 13.5)), 6.0); // face and jaw
+    d = smin(d, ellipsoid(p, v(0.0, -9.5, -14.5), v(5.5, 4.5, 4.0)), 4.0); // chin
+    d = smin(d, ellipsoid(p, v(-8.0, -8.0, -3.0), v(4.0, 4.0, 4.5)), 4.0); // cheeks
+    d = smin(d, ellipsoid(p, v(8.0, -8.0, -3.0), v(4.0, 4.0, 4.5)), 4.0);
+    d = smin(d, ellipsoid(p, v(0.0, -12.0, 6.5), v(10.0, 3.5, 2.5)), 3.0); // brow
+    // nose: bridge and tip
+    d = smin(d, capsule(p, v(0.0, -13.5, 4.0), v(0.0, -16.5, -2.5), 1.6), 2.0);
+    d = smin(d, ellipsoid(p, v(0.0, -16.0, -3.2), v(3.2, 2.6, 2.4)), 1.5);
+    // lips
+    d = smin(d, ellipsoid(p, v(0.0, -13.2, -8.3), v(4.6, 2.0, 1.3)), 1.5);
+    d = smin(d, ellipsoid(p, v(0.0, -12.8, -10.4), v(4.0, 2.0, 1.3)), 1.5);
+    // ears
+    for sx in [-1.0, 1.0] {
+        let ear = ellipsoid(p, v(14.5 * sx, 3.0, 0.5), v(2.6, 5.0, 7.5));
+        let hollow = ellipsoid(p, v(15.6 * sx, 2.6, 0.5), v(1.4, 3.2, 5.2));
+        d = smin(d, smax(ear, -hollow, 0.8), 1.5);
+    }
+    // eye sockets with simple eyeballs
+    for sx in [-1.0, 1.0] {
+        d = smax(d, -ellipsoid(p, v(5.0 * sx, -14.5, 2.5), v(3.6, 3.0, 2.6)), 1.5);
+        d = smin(d, ellipsoid(p, v(5.0 * sx, -12.9, 2.5), v(2.6, 2.2, 2.2)), 0.6);
+    }
+    // neck, cut flat underneath so it stands on the plate
+    d = smin(d, capsule(p, v(0.0, 2.5, -14.0), v(0.0, 3.5, -40.0), 7.8), 5.0);
+    smax(d, -(p.z + 31.0), 2.5)
+}
+
+/// The generic head (built once, then reused).
+pub fn human_head() -> Mesh {
+    static HEAD: std::sync::OnceLock<Mesh> = std::sync::OnceLock::new();
+    HEAD.get_or_init(build_head).clone()
+}
+
+/// Mesh of the generic head: a sphere grid pushed out to the head's surface.
+fn build_head() -> Mesh {
+    let center = DVec3::new(0.0, 0.0, -2.0);
+    let (nu, nv) = (200usize, 200usize);
+    let surface = |dir: DVec3| -> f64 {
+        // outermost crossing along the ray
+        let step = 0.4;
+        let mut t = 70.0;
+        while t > 0.0 && head_sdf(center + dir * t) > 0.0 {
+            t -= step;
+        }
+        let (mut lo, mut hi) = (t.max(0.0), t + step);
+        for _ in 0..30 {
+            let mid = (lo + hi) / 2.0;
+            if head_sdf(center + dir * mid) < 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo + hi) / 2.0
+    };
+    let mut m = Mesh::new();
+    let top = m.add_vert(center + DVec3::Z * surface(DVec3::Z));
+    let bottom = m.add_vert(center - DVec3::Z * surface(-DVec3::Z));
+    let mut rows: Vec<Vec<u32>> = vec![];
+    for j in 1..nv {
+        let phi = std::f64::consts::PI * j as f64 / nv as f64;
+        let row = (0..nu)
+            .map(|i| {
+                let th = std::f64::consts::TAU * i as f64 / nu as f64;
+                let dir = DVec3::new(phi.sin() * th.cos(), phi.sin() * th.sin(), phi.cos());
+                m.add_vert(center + dir * surface(dir))
+            })
+            .collect();
+        rows.push(row);
+    }
+    for i in 0..nu {
+        let k = (i + 1) % nu;
+        m.add_tri(top, rows[0][i], rows[0][k]);
+        let last = &rows[rows.len() - 1];
+        m.add_tri(bottom, last[k], last[i]);
+    }
+    for j in 0..rows.len() - 1 {
+        for i in 0..nu {
+            let k = (i + 1) % nu;
+            m.add_quad(rows[j][i], rows[j + 1][i], rows[j + 1][k], rows[j][k]);
+        }
+    }
+    orient_outward(&mut m);
+    m
+}
+
+#[cfg(test)]
+mod head_tests {
+    use super::*;
+    #[test]
+    fn head_is_closed_and_stands() {
+        let m = human_head();
+        let mut e = std::collections::HashMap::new();
+        for t in &m.tris {
+            for i in 0..3 {
+                *e.entry((t[i], t[(i + 1) % 3])).or_insert(0) += 1;
+            }
+        }
+        assert!(e.iter().all(|(k, n)| *n == 1 && e.get(&(k.1, k.0)) == Some(&1)));
+        let b = m.bounds();
+        eprintln!("HEAD size {:?} vol {}", b.size(), m.volume());
+        assert!(m.volume() > 0.0);
+        // flat bottom: lots of vertices on z = 0
+        assert!(m.verts.iter().filter(|v| v.z < b.min.z + 0.05).count() > 100);
+        // the nose is the front-most point (-Y), in the middle
+        let front = m.verts.iter().min_by(|a, c| a.y.total_cmp(&c.y)).unwrap();
+        assert!(front.x.abs() < 2.0, "{front:?}");
+    }
+}

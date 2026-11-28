@@ -2,6 +2,11 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.11.0 — 2026-11-28
+- **Head** in Basic shapes: a smooth, friendly human head on a neck with a flat base
+  (about 55 mm tall). Resize it, then shape it with the Sculpt tool (turn on Mirror) or add
+  details with Raise/Sink.
+
 ## 1.10.2 — 2026-11-28
 - **See-through plate from below:** orbit under the plate and it turns see-through, and every
   part's area that sits on the plate shows in green. A part with no green isn't touching
