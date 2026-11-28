@@ -2,6 +2,12 @@
 
 The version shows in the window title and the status bar, and in the download file names.
 
+## 1.9.0 — 2026-11-28
+- **Drag preview:** dragging a shape from the Shapes panel now shows a faint see-through copy
+  of it on the plate, with its outline, exactly where it will land (on top of other parts
+  too). Let go to drop it there.
+- **My Parts** tiles can be dragged onto the plate as well.
+
 ## 1.8.2 — 2026-11-28
 - **Ball joint:** the neck snapped while freeing a stuck ball. The ball is bigger, the neck is
   about 40% thicker with a flare where it meets the block, and the cup has extra room under

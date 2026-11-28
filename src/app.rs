@@ -303,6 +303,9 @@ pub struct App {
     thumbs: Vec<egui::TextureHandle>,
     /// saved My Parts and their thumbnails (loaded on first use)
     my_parts: Option<Vec<(crate::my_parts::MyPart, egui::TextureHandle)>>,
+    /// faint preview of a shape being dragged in from the Shapes panel:
+    /// (what's dragged, its mesh centred at the origin, where it would land)
+    ghost: Option<(GhostSrc, Arc<crate::mesh::Mesh>, DVec3)>,
     /// name being typed in the "Save to My Parts" window
     save_part: Option<String>,
     /// (part index, new name) while renaming
@@ -412,6 +415,7 @@ impl App {
             pp: None,
             thumbs: vec![],
             my_parts: None,
+            ghost: None,
             save_part: None,
             rename_part: None,
             edits: 0,
@@ -584,6 +588,103 @@ impl App {
     }
 
     // ---------------------------------------------------------- My Parts
+
+    /// Mesh (centred, on z = 0) of what a Shapes-panel tile would add.
+    fn ghost_mesh(&mut self, src: GhostSrc) -> Option<crate::mesh::Mesh> {
+        match src {
+            GhostSrc::Shape(i) => {
+                let info = LIBRARY.get(i)?;
+                let mut shape = (info.shape)();
+                if let Some(g) = crate::settings::fit_gap() {
+                    shape.apply_fit(g);
+                }
+                let mut size = shape.natural_size().unwrap_or(DVec3::from(info.default_size));
+                if let Some(a) = shape.text_aspect() {
+                    size.x = size.y * a;
+                }
+                Some(shape.generate(size))
+            }
+            GhostSrc::MyPart(i) => {
+                let part = self.my_parts.as_ref()?.get(i)?.0.clone();
+                let mut m = crate::mesh::Mesh::new();
+                for o in part.objects.iter().filter(|o| o.visible && !o.hole) {
+                    m.append(&self.cache.world_mesh(o));
+                }
+                let b = m.bounds();
+                let off = DVec3::new(b.center().x, b.center().y, b.min.z);
+                for v in &mut m.verts {
+                    *v -= off;
+                }
+                Some(m)
+            }
+        }
+    }
+
+    /// Where a dragged-in part of this size would land under the pointer.
+    fn drop_point(&mut self, rect: Rect, p: Pos2, size: DVec3, ignore: &[u64]) -> Option<DVec3> {
+        let hit = self.pick(rect, p);
+        let t = match &hit {
+            Some(h) if !self.entries[h.entry].hole && !ignore.contains(&self.entries[h.entry].id) => Some(h.point),
+            _ => {
+                let (o, d) = self.camera.ray(rect, p);
+                if d.z.abs() > 1e-6 && (-o.z / d.z) > 0.0 { Some(o + d * (-o.z / d.z)) } else { None }
+            }
+        }?;
+        let (mut x, mut y) = (t.x, t.y);
+        if self.snap > 0.0 {
+            x = (x / self.snap).round() * self.snap;
+            y = (y / self.snap).round() * self.snap;
+        }
+        let mut floor: f64 = 0.0;
+        for (dx, dy) in [(0.0, 0.0), (-0.45, -0.45), (0.45, -0.45), (-0.45, 0.45), (0.45, 0.45)] {
+            floor = floor.max(self.surface_below(x + dx * size.x, y + dy * size.y, ignore));
+        }
+        Some(DVec3::new(x, y, floor))
+    }
+
+    /// Show (or move, or clear) the drag preview.
+    fn update_ghost(&mut self, src: Option<GhostSrc>, rect: Rect, pointer: Option<Pos2>) {
+        let want = match (src, pointer) {
+            (Some(s), Some(p)) => Some((s, p)),
+            _ => None,
+        };
+        let Some((src, p)) = want else {
+            if self.ghost.take().is_some() {
+                self.rebuild_batches();
+            }
+            return;
+        };
+        let mesh = match &self.ghost {
+            Some((s, m, _)) if *s == src => m.clone(),
+            _ => match self.ghost_mesh(src) {
+                Some(m) => Arc::new(m),
+                None => return,
+            },
+        };
+        let size = mesh.bounds().size();
+        let Some(at) = self.drop_point(rect, p, size, &[]) else { return };
+        let moved = !matches!(&self.ghost, Some((s, _, q)) if *s == src && q.distance(at) < 1e-6);
+        self.ghost = Some((src, mesh, at));
+        if moved {
+            self.rebuild_batches();
+        }
+    }
+
+    fn add_my_part_at(&mut self, idx: usize, rect: Rect, p: Pos2) {
+        self.add_my_part(idx);
+        let Some(&id) = self.selection.first() else { return };
+        let b = match self.doc.find(id) {
+            Some(o) => self.cache.world_mesh(&o.clone()).bounds(),
+            None => return,
+        };
+        let Some(at) = self.drop_point(rect, p, b.size(), &[id]) else { return };
+        if let Some(o) = self.doc.find_mut(id) {
+            // the part's footprint centre should land on the pointer
+            let shift = DVec3::new(at.x - b.center().x, at.y - b.center().y, at.z - b.min.z);
+            o.pos += shift;
+        }
+        self.touch();
+    }
 
     fn load_my_parts(&mut self, ctx: &egui::Context) {
         let mut out = vec![];
@@ -1905,6 +2006,25 @@ impl App {
                 box_lines(&mut lines, bb, [0.1, 0.45, 0.95, 1.0]);
             }
         }
+        // drag-in preview: a faint copy where it would land
+        if let Some((_, m, at)) = &self.ghost {
+            let off = at.as_vec3();
+            let col = fil.first().map(|f| f.color).unwrap_or([200, 200, 200]);
+            for t in 0..m.tris.len() {
+                let [a, b, c] = m.tri_points(t);
+                holes.tri(a.as_vec3() + off, b.as_vec3() + off, c.as_vec3() + off, rgba(col, 0.35));
+            }
+            let bb = m.bounds();
+            box_lines(&mut lines, crate::mesh::Aabb { min: bb.min + *at, max: bb.max + *at }, [0.35, 0.65, 1.0, 0.8]);
+            // footprint outline where it will sit
+            let (x0, y0, x1, y1) = ((bb.min.x + at.x) as f32, (bb.min.y + at.y) as f32, (bb.max.x + at.x) as f32, (bb.max.y + at.y) as f32);
+            let z = 0.04;
+            let zf = at.z as f32 + z;
+            let fc = [0.35, 0.65, 1.0, 1.0];
+            for (p, q) in [((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))] {
+                lines.line(Vec3::new(p.0, p.1, zf), Vec3::new(q.0, q.1, zf), fc);
+            }
+        }
         // issue highlight
         if let (Some(r), Some(i)) = (&self.report, self.selected_issue) {
             if let Some(issue) = r.issues.get(i) {
@@ -3190,19 +3310,28 @@ impl App {
                         let (p, t) = &self.my_parts.as_ref().unwrap()[k];
                         (p.name.clone(), t.id(), p.saved.clone())
                     };
-                    let (rect, r) = ui.allocate_exact_size(tile, Sense::click());
-                    let bg = if r.hovered() { crate::theme::tile_hover() } else { crate::theme::tile_bg() };
+                    let (rect, r) = ui.allocate_exact_size(tile, Sense::click_and_drag());
+                    let bg = if r.hovered() || r.dragged() { crate::theme::tile_hover() } else { crate::theme::tile_bg() };
                     ui.painter().rect_filled(rect, 6.0, bg);
                     if r.hovered() {
                         ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, crate::theme::accent()), egui::StrokeKind::Inside);
+                    }
+                    if r.dragged() && self.ghost.is_none() {
+                        if let Some(p) = ui.ctx().pointer_hover_pos() {
+                            let layer = ui.painter().clone().with_layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dnd")));
+                            layer.image(tex, Rect::from_center_size(p + Vec2::new(4.0, 4.0), Vec2::splat(44.0)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::from_white_alpha(200));
+                        }
                     }
                     let img_rect = Rect::from_center_size(rect.center() - Vec2::new(0.0, 8.0), Vec2::splat(50.0));
                     ui.painter().image(tex, img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
                     let label: String = if name.chars().count() > 13 { name.chars().take(12).collect::<String>() + "…" } else { name.clone() };
                     ui.painter().text(Pos2::new(rect.center().x, rect.bottom() - 9.0), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.5), crate::theme::tile_text());
-                    let r = r.on_hover_text(format!("{name} — saved {saved}. Click to add; right-click to rename or delete."));
+                    let r = r.on_hover_text(format!("{name} — saved {saved}. Click or drag onto the plate to add; right-click to rename or delete."));
                     if r.clicked() {
                         add_part = Some(k);
+                    }
+                    if r.drag_started() || r.dragged() {
+                        r.dnd_set_drag_payload(MyPartDrag(k));
                     }
                     r.context_menu(|ui| {
                         if ui.button("Rename…").clicked() {
@@ -3256,7 +3385,7 @@ impl App {
                     if r.drag_started() || r.dragged() {
                         r.dnd_set_drag_payload(i);
                     }
-                    if r.dragged() {
+                    if r.dragged() && self.ghost.is_none() {
                         if let Some(p) = ui.ctx().pointer_hover_pos() {
                             let layer = ui.painter().clone().with_layer_id(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dnd")));
                             layer.image(self.thumbs[i].id(), Rect::from_center_size(p + Vec2::new(4.0, 4.0), Vec2::splat(44.0)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::from_white_alpha(200));
@@ -4575,10 +4704,26 @@ impl App {
                 painter.circle_stroke(q, 8.0, Stroke::new(1.5, Color32::WHITE));
             }
         }
-        // drop new shapes dragged in from the Shapes panel
+        // drop new shapes dragged in from the Shapes panel, with a faint preview on the way
+        let hovering = resp.dnd_hover_payload::<usize>().map(|i| GhostSrc::Shape(*i)).or_else(|| resp.dnd_hover_payload::<MyPartDrag>().map(|i| GhostSrc::MyPart(i.0)));
+        let had_ghost = self.ghost.is_some();
+        // while something is being dragged egui doesn't report hovering, so use the raw pointer
+        let drag_ptr = ui.ctx().pointer_latest_pos().filter(|p| rect.contains(*p));
+        self.update_ghost(hovering, rect, drag_ptr);
+        if had_ghost || self.ghost.is_some() {
+            // the 3D view only redraws on input; keep it fresh while the preview moves
+            ui.ctx().request_repaint();
+        }
         if let Some(idx) = resp.dnd_release_payload::<usize>() {
-            if let Some(p) = pointer {
+            self.update_ghost(None, rect, None);
+            if let Some(p) = pointer.or(drag_ptr) {
                 self.add_shape_at(*idx, rect, p);
+            }
+        }
+        if let Some(idx) = resp.dnd_release_payload::<MyPartDrag>() {
+            self.update_ghost(None, rect, None);
+            if let Some(p) = pointer.or(drag_ptr) {
+                self.add_my_part_at(idx.0, rect, p);
             }
         }
         // view cube-ish buttons
@@ -4601,8 +4746,8 @@ impl App {
         if go_home && !self.doc.objects.is_empty() {
             self.fit_view(false);
         }
-        if self.doc.objects.is_empty() {
-            painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click a shape on the left to begin", egui::FontId::proportional(20.0), crate::theme::hint());
+        if self.doc.objects.is_empty() && self.ghost.is_none() {
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, "Click or drag a shape from the left to begin", egui::FontId::proportional(20.0), crate::theme::hint());
         }
     }
 
@@ -4865,29 +5010,12 @@ impl App {
     }
 
     fn add_shape_at(&mut self, idx: usize, rect: Rect, p: Pos2) {
-        let hit = self.pick(rect, p);
-        let target = match &hit {
-            Some(h) if !self.entries[h.entry].hole => Some(h.point),
-            _ => {
-                let (o, d) = self.camera.ray(rect, p);
-                if d.z.abs() > 1e-6 && (-o.z / d.z) > 0.0 { Some(o + d * (-o.z / d.z)) } else { None }
-            }
-        };
         self.add_shape(idx);
-        let Some(t) = target else { return };
         let Some(&id) = self.selection.first() else { return };
         let size = self.doc.find(id).map(|o| o.size).unwrap_or(DVec3::ONE);
-        let (mut x, mut y) = (t.x, t.y);
-        if self.snap > 0.0 {
-            x = (x / self.snap).round() * self.snap;
-            y = (y / self.snap).round() * self.snap;
-        }
-        let mut floor: f64 = 0.0;
-        for (dx, dy) in [(0.0, 0.0), (-0.45, -0.45), (0.45, -0.45), (-0.45, 0.45), (0.45, 0.45)] {
-            floor = floor.max(self.surface_below(x + dx * size.x, y + dy * size.y, &[id]));
-        }
+        let Some(at) = self.drop_point(rect, p, size, &[id]) else { return };
         if let Some(o) = self.doc.find_mut(id) {
-            o.pos = DVec3::new(x, y, floor);
+            o.pos = at;
         }
         self.touch();
     }
@@ -5729,3 +5857,14 @@ fn clipboard_text() -> Option<String> {
     let t = t.replace("\r\n", "\n");
     (!t.is_empty()).then_some(t)
 }
+
+/// What a drag from the Shapes panel carries.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum GhostSrc {
+    Shape(usize),
+    MyPart(usize),
+}
+
+/// Drag payload for a My Parts tile.
+#[derive(Clone, Copy)]
+struct MyPartDrag(usize);
